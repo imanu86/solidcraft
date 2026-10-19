@@ -8,7 +8,7 @@ pub(crate) mod import;
 
 use serde_json::{Value, json};
 use solidcraft_doc::Document;
-use solidcraft_io::Format;
+use solidcraft_io::{Format, SlicerOptions, SlicerTarget};
 
 use super::CommandSpec;
 use crate::params::{bad, bool_, num, str_, string_list};
@@ -48,12 +48,12 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("file.export", "Export", export)
         .icon("export")
         .noundo()
-        .params("path; format?: stl|stla|obj|step|3mf|3mf-tagged|urdf|json (default from extension; 3mf-tagged: 3MF whose triangles carry their B-rep face, at full precision, for meshing and analysis tools; docs/formats/3mf-face-tags.md; urdf: the whole assembly as a robot, with STL meshes written next to it; docs/urdf.md); bodies?: [names] (JSON and URDF export the complete design); urdf only: mesh_prefix? (before each mesh file name, e.g. package://robot/meshes/), effort? (default 1000), velocity? (default 10)"),
+        .params("path; format?: stl|stla|obj|step|3mf|3mf-tagged|urdf|json (default from extension; 3mf-tagged: 3MF whose triangles carry their B-rep face, at full precision, for meshing and analysis tools; docs/formats/3mf-face-tags.md; urdf: the whole assembly as a robot, with STL meshes written next to it; docs/urdf.md); bodies?: [names] (JSON and URDF export the complete design); visible_only?: bool (only the bodies shown in the view; default false: hidden bodies too); urdf only: mesh_prefix? (before each mesh file name, e.g. package://robot/meshes/), effort? (default 1000), velocity? (default 10); slicer_compat?: none|bambu (default none: the plain file; bambu: for Bambu Studio, with format 3mf a project with one filament per colour, each body on its colour's filament and faces of other colours painted, with format obj an OBJ with its colours in an MTL file next to it; docs/formats/slicer-export.md); mtl?: bool (obj: write the colours as an MTL file next to it, one material per colour; default false, always with bambu); max_colors? (most filaments or materials: 1-16 with bambu, default 16; the colours covering the most triangles keep theirs, the others take the nearest); face_colors?: bool (faces with colours of their own keep them; default true); bambu 3mf only: printer?, process?, filament? (Bambu Studio preset names the project names; default Bambu Lab P2S 0.4 nozzle, 0.20mm Standard @BBL P2S, Bambu PLA Basic @BBL P2S) → with slicer_compat or mtl also: files, bodies, filaments (3mf) or materials (obj): [{color, triangles}], distinct_colors, merged_colors; 3mf: extruders (each body's filament), painted_triangles"),
     CommandSpec::new("file.save_mesh", "Save As Mesh", save_mesh)
         .at("MESH", "MODIFY")
         .icon("mesh_export")
         .noundo()
-        .params("path; format?: stl|3mf|3mf-tagged (default from the extension, else stl; 3mf-tagged: docs/formats/3mf-face-tags.md); bodies?: [names] (default: all); ascii?: bool (STL); slicer?: id, name or program path from file.slicers (open the saved file there)"),
+        .params("path; format?: stl|3mf|3mf-tagged|obj (default from the extension, else stl; 3mf-tagged: docs/formats/3mf-face-tags.md); bodies?: [names] (default: all); visible_only?: bool (only the bodies shown in the view; default false); ascii?: bool (STL); slicer?: id, name or program path from file.slicers (open the saved file there); slicer_compat?, mtl?, max_colors?, face_colors?, printer?, process?, filament? (as file.export)"),
     CommandSpec::new("file.slicers", "Installed Slicers", slicers).icon("export")
         .noundo()
         .params("→ the slicers found on this machine: [{id, name, icon?}]; pass an id or name as file.save_mesh's `slicer`"),
@@ -465,7 +465,10 @@ fn save_as(s: &mut Session, p: &Value) -> Result<Value> {
     )
 }
 
-fn export_to(s: &Session, path: &str, format: Format, bodies: &[String]) -> Result<Value> {
+fn export_to(s: &Session, path: &str, format: Format, bodies: &[String], slicer: Option<&SlicerOptions>) -> Result<Value> {
+    if let Some(options) = slicer {
+        return export_for_slicer(s, path, format, bodies, options);
+    }
     let name = std::path::Path::new(path).file_stem().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| s.doc.name.clone());
     // A design with components exports as a STEP assembly; otherwise bodies as placed.
     let bytes = if format == Format::Design {
@@ -485,12 +488,125 @@ fn export_to(s: &Session, path: &str, format: Format, bodies: &[String]) -> Resu
 }
 
 fn export(s: &mut Session, p: &Value) -> Result<Value> {
-    let path = path_arg(p, "file.export")?;
+    let cmd = "file.export";
+    let path = path_arg(p, cmd)?;
     let format = Format::from_name(str_(p, "format").unwrap_or(path))?;
+    let slicer = slicer_options(p, format, cmd)?;
+    if matches!(format, Format::Urdf | Format::Design) && p.get("visible_only").is_some_and(|v| !v.is_null()) {
+        return Err(bad(cmd, "`visible_only` applies to body exports, not to urdf or design JSON (they export the complete design)"));
+    }
     if format == Format::Urdf {
         return export_urdf(s, path, p);
     }
-    export_to(s, path, format, &string_list(p, "bodies"))
+    let bodies = export_bodies(s, p, cmd)?;
+    export_to(s, path, format, &bodies, slicer.as_ref())
+}
+
+/// The bodies an export names (empty: all), and with `visible_only` only those shown in the view.
+fn export_bodies(s: &Session, p: &Value, cmd: &str) -> Result<Vec<String>> {
+    let named = string_list(p, "bodies");
+    let visible_only = match p.get("visible_only") {
+        None | Some(Value::Null) => false,
+        Some(v) => v.as_bool().ok_or_else(|| bad(cmd, "`visible_only` must be true or false"))?,
+    };
+    if !visible_only {
+        return Ok(named);
+    }
+    let shown: Vec<String> =
+        s.world_state().bodies.iter().map(|b| b.name.clone()).filter(|n| (named.is_empty() || named.contains(n)) && s.body_visible(n)).collect();
+    if shown.is_empty() {
+        return Err(bad(cmd, "no visible bodies to export (turn off visible_only to export hidden bodies too)"));
+    }
+    Ok(shown)
+}
+
+/// The slicer options of a mesh export (`slicer_compat`, `mtl`, `max_colors`, `face_colors` and the
+/// Bambu Studio preset names), or `None` for the plain export, which is written as it always was.
+fn slicer_options(p: &Value, format: Format, cmd: &str) -> Result<Option<SlicerOptions>> {
+    let given = |k: &str| p.get(k).is_some_and(|v| !v.is_null());
+    let target = match p.get("slicer_compat") {
+        None | Some(Value::Null) => SlicerTarget::None,
+        Some(v) => v.as_str().and_then(SlicerTarget::parse).ok_or_else(|| bad(cmd, "`slicer_compat` must be \"none\" or \"bambu\""))?,
+    };
+    let flag = |k: &str| match p.get(k) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v.as_bool().map(Some).ok_or_else(|| bad(cmd, format!("`{k}` must be true or false"))),
+    };
+    let mtl = flag("mtl")?.unwrap_or(false);
+    if mtl && format != Format::Obj {
+        return Err(bad(cmd, "`mtl` applies to obj exports only"));
+    }
+    if target == SlicerTarget::None && !mtl {
+        if let Some(k) = ["max_colors", "face_colors", "printer", "process", "filament"].into_iter().find(|k| given(k)) {
+            return Err(bad(cmd, format!("`{k}` applies to exports with slicer_compat \"bambu\" or mtl: true")));
+        }
+        return Ok(None);
+    }
+    if target == SlicerTarget::Bambu && !matches!(format, Format::ThreeMf | Format::Obj) {
+        return Err(bad(cmd, "slicer_compat \"bambu\" needs format 3mf (a Bambu Studio project) or obj (with an MTL file)"));
+    }
+    let cap = if target == SlicerTarget::Bambu { solidcraft_io::MAX_BAMBU_FILAMENTS } else { solidcraft_io::slicer::MAX_MTL_MATERIALS };
+    let max_colors = match p.get("max_colors") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(
+            v.as_f64()
+                .filter(|x| x.fract() == 0.0 && *x >= 1.0 && *x <= cap as f64)
+                .map(|x| x as usize)
+                .ok_or_else(|| bad(cmd, format!("`max_colors` must be a whole number from 1 to {cap}")))?,
+        ),
+    };
+    let mut presets = solidcraft_io::BambuPresets::default();
+    for (k, slot) in [("printer", &mut presets.printer), ("process", &mut presets.process), ("filament", &mut presets.filament)] {
+        match p.get(k) {
+            None | Some(Value::Null) => {}
+            Some(_) if !(target == SlicerTarget::Bambu && format == Format::ThreeMf) => {
+                return Err(bad(cmd, format!("`{k}` applies to Bambu Studio 3MF exports only")));
+            }
+            Some(v) => {
+                let name = v.as_str().map(str::trim).filter(|n| !n.is_empty() && n.len() <= 200 && !n.chars().any(char::is_control));
+                *slot = name.ok_or_else(|| bad(cmd, format!("`{k}` must be a preset name (1 to 200 characters)")))?.to_string();
+            }
+        }
+    }
+    Ok(Some(SlicerOptions { target, max_colors, face_colors: flag("face_colors")?.unwrap_or(true), mtl, presets }))
+}
+
+/// A mesh export made for a slicer: a Bambu Studio project 3MF, or OBJ with an MTL file next to
+/// it (written first, so the OBJ never names a file that is not there).
+fn export_for_slicer(s: &Session, path: &str, format: Format, bodies: &[String], options: &SlicerOptions) -> Result<Value> {
+    let file = std::path::Path::new(path);
+    let mtl_path = (format == Format::Obj).then(|| file.with_extension("mtl"));
+    let mtl_name = mtl_path.as_deref().and_then(std::path::Path::file_name).map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let out = solidcraft_io::export_for_slicer(&s.doc.painted(&s.world_state()), bodies, format, &s.doc.metadata, options, &mtl_name)?;
+    let mut files = Vec::new();
+    if let (Some(mtl_path), Some(mtl)) = (&mtl_path, &out.mtl) {
+        let mtl_path = mtl_path.to_string_lossy().to_string();
+        solidcraft_io::vfs::check(&mtl_path).map_err(|e| EngineError::Other(format!("{mtl_path}: {e}")))?;
+        solidcraft_io::vfs::check(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+        solidcraft_io::vfs::write(&mtl_path, mtl).map_err(|e| EngineError::Other(format!("{mtl_path}: {e}")))?;
+        files.push(mtl_path);
+    }
+    solidcraft_io::vfs::write(path, &out.bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    files.push(path.to_string());
+    let colors: Vec<Value> = out.colors.iter().map(|(c, n)| json!({"color": c, "triangles": n})).collect();
+    let mut r = json!({
+        "path": path,
+        "bytes": out.bytes.len(),
+        "format": format!("{format:?}"),
+        "slicer_compat": if options.target == SlicerTarget::Bambu { "bambu" } else { "none" },
+        "files": files,
+        "bodies": out.bodies,
+        "distinct_colors": out.distinct_colors,
+        "merged_colors": out.merged_colors,
+    });
+    if format == Format::ThreeMf {
+        r["filaments"] = json!(colors);
+        r["painted_triangles"] = json!(out.painted_triangles);
+        r["extruders"] = json!(out.extruders);
+    } else {
+        r["materials"] = json!(colors);
+    }
+    Ok(r)
 }
 
 /// The assembly as a URDF and its meshes next to it (docs/urdf.md). Every path is checked before
@@ -557,21 +673,25 @@ fn save_mesh(s: &mut Session, p: &Value) -> Result<Value> {
     let format = match str_(p, "format").map(str::to_ascii_lowercase).as_deref() {
         None => match std::path::Path::new(path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).as_deref() {
             Some("3mf") => Format::ThreeMf,
+            Some("obj") => Format::Obj,
             _ => Format::StlBinary,
         },
         Some("stl") if bool_(p, "ascii").unwrap_or(false) => Format::StlAscii,
         Some("stl") => Format::StlBinary,
         Some("3mf") => Format::ThreeMf,
         Some("3mf-tagged") => Format::ThreeMfTagged,
-        Some(other) => return Err(bad(cmd, format!("unknown mesh format `{other}` (stl, 3mf, 3mf-tagged)"))),
+        Some("obj") => Format::Obj,
+        Some(other) => return Err(bad(cmd, format!("unknown mesh format `{other}` (stl, 3mf, 3mf-tagged, obj)"))),
     };
+    let options = slicer_options(p, format, cmd)?;
     let slicer = match str_(p, "slicer") {
         None => None,
         Some(spec) => Some(
             crate::slicers::resolve(spec).ok_or_else(|| bad(cmd, format!("no slicer `{spec}` (see file.slicers, or give the path of a program)")))?,
         ),
     };
-    let mut out = export_to(s, path, format, &string_list(p, "bodies"))?;
+    let bodies = export_bodies(s, p, cmd)?;
+    let mut out = export_to(s, path, format, &bodies, options.as_ref())?;
     if let (Some(slicer), Some(obj)) = (slicer, out.as_object_mut()) {
         // The file is saved either way; a slicer that won't start is reported, not fatal.
         match slicer.open(path) {
@@ -636,6 +756,10 @@ fn recovery_discard(_s: &mut Session, p: &Value) -> Result<Value> {
     }
     Ok(json!({"discarded": ids}))
 }
+
+#[cfg(test)]
+#[path = "file_slicer_tests.rs"]
+mod slicer_tests;
 
 #[cfg(test)]
 #[path = "urdf_tests.rs"]

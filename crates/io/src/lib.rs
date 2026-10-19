@@ -2,10 +2,12 @@
 //! document rebuilds on load and optional display caches remain provisional. Bodies export
 //! as STL (binary or ASCII), OBJ, STEP and 3MF, and assemblies as URDF ([`urdf()`]); STEP, IGES,
 //! FreeCAD and Rhino files import as a base feature (see [`step_import_feature`]), 3MF and
-//! STL files as mesh bodies (see [`mesh_import_feature`]).
+//! STL files as mesh bodies (see [`mesh_import_feature`]). Mesh exports can be made for a slicer
+//! ([`export_for_slicer`]): a Bambu Studio project 3MF, or OBJ with its colours in an MTL file.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+mod bambu;
 pub mod catalog;
 mod design;
 mod design_metadata;
@@ -24,6 +26,7 @@ mod native_cad;
 pub use native_cad::{NATIVE_CAD_EXTS, is_native_cad_path, native_cad_to_step};
 pub mod safe_write;
 mod sketch2d;
+pub mod slicer;
 mod svg;
 mod threemf;
 pub mod urdf;
@@ -38,7 +41,10 @@ pub use svg::read_svg;
 mod gltf_in;
 pub use gltf_in::{GltfImport, Loader, MAX_GLTF_BYTES, MeshPlan, PlanPlace, glb_container, is_gltf_path, read_gltf};
 mod obj;
+mod obj_out;
+pub use bambu::{BAMBU_VERSION, FilamentSlot, paint_code};
 pub use obj::read_obj;
+pub use slicer::{BambuPresets, MAX_BAMBU_FILAMENTS, Palette, SlicerExport, SlicerOptions, SlicerTarget, export_for_slicer};
 pub use threemf::{MAX_3MF_BYTES, MeshObject, model_xml, model_xml_with, read_3mf, weld, write_3mf, write_3mf_with};
 pub use urdf::{UrdfOptions, UrdfPackage, urdf};
 
@@ -406,6 +412,14 @@ fn header_line(text: Option<&str>) -> String {
 /// gives them. Other tools' keys are never exported.
 fn threemf_metadata(meta: &Metadata) -> Vec<(&'static str, &str)> {
     [("Title", meta.project()), ("Designer", meta.author()), ("Description", meta.description()), ("LicenseTerms", meta.license())]
+        .into_iter()
+        .filter_map(|(name, text)| Some((name, text?)))
+        .collect()
+}
+
+/// The design properties as Bambu Studio's model metadata.
+fn bambu_metadata(meta: &Metadata) -> Vec<(&'static str, &str)> {
+    [("Title", meta.project()), ("Designer", meta.author()), ("Description", meta.description()), ("License", meta.license())]
         .into_iter()
         .filter_map(|(name, text)| Some((name, text?)))
         .collect()

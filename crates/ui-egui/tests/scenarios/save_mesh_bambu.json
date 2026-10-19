@@ -1,0 +1,15 @@
+[
+ {"note": "Save as mesh made for Bambu Studio: the slicer compatibility row turns the format into a Bambu Studio project and adds its rows; the file is saved as a 3MF project (docs/formats/slicer-export.md)."},
+ {"call": "engine.execute", "params": {"command": "solid.box", "params": {"length": 30, "width": 20, "height": 10}}},
+ {"call": "engine.execute", "params": {"command": "appearance.assign", "params": {"bodies": ["Body1"], "color": "#ff0000"}}},
+ {"call": "ui.view", "params": {"view": "iso"}},
+ {"click": [127, 16]},
+ {"widget": "Save as mesh…"},
+ {"expect": {"dialog": "SaveMesh"}},
+ {"click": {"world": [15, 10, 10]}},
+ {"widget": "None (plain file)", "near": "Slicer compatibility"},
+ {"widget": "Bambu Studio"},
+ {"expect": {"dialog": "SaveMesh"}},
+ {"widget": "Save"},
+ {"expect": {"dialog": null, "errors": 0, "file": "Body1.3mf"}}
+]
