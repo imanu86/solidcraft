@@ -212,7 +212,7 @@ pub fn tool_definitions() -> Vec<Value> {
              comes from the extension unless given. URDF (.urdf) exports the whole assembly for robot simulators: a link per \
              component placement with mass and inertia, joints from the assembly's joints, and STL meshes in metres written \
              next to it (docs/urdf.md); RViz needs mesh_prefix such as package://robot/meshes/. slicer_compat bambu makes \
-             the file for Bambu Studio: with 3mf a project with one filament per colour (at most 16), each body on its \
+             the file for Bambu Studio: with 3mf a project with one filament per colour (16 by default, at most 32), each body on its \
              colour's filament and faces of other colours painted; with obj an MTL file of the colours next to it \
              (docs/formats/slicer-export.md).",
             obj(
@@ -226,8 +226,9 @@ pub fn tool_definitions() -> Vec<Value> {
                     "velocity": {"type": "number", "description": "urdf: joint velocity limit, m/s or rad/s (default 10)"},
                     "slicer_compat": {"type": "string", "enum": ["none", "bambu"], "description": "none (default): the plain file; bambu: made for Bambu Studio (format 3mf or obj)"},
                     "mtl": {"type": "boolean", "description": "obj: write the colours as an MTL file next to it (default false; always with bambu)"},
-                    "max_colors": {"type": "integer", "description": "Most filaments or MTL materials (bambu: 1-16, default 16); the colours covering the most triangles keep theirs, the others take the nearest"},
+                    "max_colors": {"type": "integer", "description": "Most filaments or MTL materials (bambu: 1-32, default 16); over it the closest colours share one (merged in CIELAB by area)"},
                     "face_colors": {"type": "boolean", "description": "Faces with colours of their own keep them (default true)"},
+                    "assembly": {"type": "boolean", "description": "The bodies as one assembly, each where it is (bambu 3mf: one object with a part per body on its own filament; obj: one object with a group per body). Default false: an object per body"},
                     "printer": string("bambu 3mf: Bambu Studio printer preset name (default Bambu Lab P2S 0.4 nozzle)"),
                     "process": string("bambu 3mf: Bambu Studio process preset name (default 0.20mm Standard @BBL P2S)"),
                     "filament": string("bambu 3mf: Bambu Studio filament preset name for every filament (default Bambu PLA Basic @BBL P2S)"),
@@ -453,6 +454,7 @@ fn dispatch(b: &mut dyn Backend, name: &str, a: &Map<String, Value>) -> Result<V
                     "mtl",
                     "max_colors",
                     "face_colors",
+                    "assembly",
                     "printer",
                     "process",
                     "filament",

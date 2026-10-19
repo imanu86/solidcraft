@@ -365,12 +365,14 @@ pub struct Prefs {
     pub custom_slicers: Vec<String>,
     /// Save as mesh made for a slicer (docs/formats/slicer-export.md): `bambu`, or empty for none;
     /// Bambu Studio's format (`3mf` or `obj`), the most colours, whether faces keep their own
-    /// colours, whether only visible bodies go, and the presets a Bambu Studio project names.
+    /// colours, whether only visible bodies go, whether they go as one assembly, and the presets a
+    /// Bambu Studio project names.
     pub save_mesh_slicer_compat: String,
     pub save_mesh_bambu_format: String,
     pub save_mesh_max_colors: u32,
     pub save_mesh_face_colors: bool,
     pub save_mesh_visible_only: bool,
+    pub save_mesh_assembly: bool,
     pub bambu_printer: String,
     pub bambu_process: String,
     pub bambu_filament: String,
@@ -486,9 +488,10 @@ impl Default for Prefs {
             custom_slicers: Vec::new(),
             save_mesh_slicer_compat: String::new(),
             save_mesh_bambu_format: "3mf".into(),
-            save_mesh_max_colors: solidcraft_engine::io::MAX_BAMBU_FILAMENTS as u32,
+            save_mesh_max_colors: solidcraft_engine::io::slicer::DEFAULT_BAMBU_FILAMENTS as u32,
             save_mesh_face_colors: true,
             save_mesh_visible_only: true,
+            save_mesh_assembly: false,
             bambu_printer: solidcraft_engine::io::BambuPresets::default().printer,
             bambu_process: solidcraft_engine::io::BambuPresets::default().process,
             bambu_filament: solidcraft_engine::io::BambuPresets::default().filament,

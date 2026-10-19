@@ -49,6 +49,8 @@ pub struct SaveMesh {
     max_colors: u32,
     face_colors: bool,
     visible_only: bool,
+    /// The bodies as one object with a part each, in their places.
+    assembly: bool,
     printer: String,
     process: String,
     filament: String,
@@ -110,6 +112,7 @@ pub fn start(app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
         max_colors: p.save_mesh_max_colors.clamp(1, MAX_COLORS),
         face_colors: p.save_mesh_face_colors,
         visible_only: p.save_mesh_visible_only,
+        assembly: p.save_mesh_assembly,
         printer: p.bambu_printer.clone(),
         process: p.bambu_process.clone(),
         filament: p.bambu_filament.clone(),
@@ -236,6 +239,11 @@ fn bambu_rows(ui: &mut egui::Ui, k: &mut SaveMesh) {
     ui.end_row();
     row_label(ui, "ui.visible_only");
     crate::dialogs::check(ui, &mut k.visible_only);
+    ui.end_row();
+    row_label(ui, "ui.assembly");
+    let r = ui.checkbox(&mut k.assembly, "");
+    crate::scenario::publish_handle("dialog:assembly", r.rect.center());
+    r.on_hover_text(crate::i18n::tr("ui.assembly_tip"));
     ui.end_row();
     if bambu_project(k) {
         for (label, value) in [("ui.bambu_printer", &mut k.printer), ("ui.bambu_process", &mut k.process), ("ui.bambu_filament", &mut k.filament)] {
@@ -369,6 +377,9 @@ pub fn commands(k: &SaveMesh, inputs: &[SelInput]) -> Result<Vec<(String, Value)
         p["max_colors"] = json!(k.max_colors.clamp(1, MAX_COLORS));
         p["face_colors"] = json!(k.face_colors);
         p["visible_only"] = json!(k.visible_only);
+        if k.assembly {
+            p["assembly"] = json!(true);
+        }
         if bambu_project(k) {
             for (key, value) in [("printer", &k.printer), ("process", &k.process), ("filament", &k.filament)] {
                 let value = value.trim();
@@ -420,6 +431,7 @@ pub fn run(app: &mut SolveApp, k: &SaveMesh, inputs: &[SelInput]) -> Result<(), 
     p.save_mesh_max_colors = k.max_colors.clamp(1, MAX_COLORS);
     p.save_mesh_face_colors = k.face_colors;
     p.save_mesh_visible_only = k.visible_only;
+    p.save_mesh_assembly = k.assembly;
     p.bambu_printer = k.printer.trim().to_string();
     p.bambu_process = k.process.trim().to_string();
     p.bambu_filament = k.filament.trim().to_string();
@@ -450,11 +462,20 @@ fn save(app: &mut SolveApp, mut params: Value, path: &str) {
     let _language = crate::i18n::scope(&app.preferences.language);
     params["path"] = json!(path);
     let Ok(result) = app.run("file.save_mesh", params) else { return };
+    // Made for a slicer: how many colours the design had and how many the file has.
+    let palette = result.get("filaments").or_else(|| result.get("materials")).and_then(Value::as_array).map(Vec::len);
+    let colours = result.get("distinct_colors").and_then(Value::as_u64);
     match result.get("slicer_error").and_then(Value::as_str) {
         Some(e) => app.set_status(e.to_string(), true),
         None => match result.get("slicer").and_then(Value::as_str) {
             Some(s) => app.set_status(crate::i18n::format("ui.sent_to_slicer", &[("slicer", s)]), false),
-            None => app.set_status(crate::i18n::format("ui.saved_to", &[("path", path)]), false),
+            None => match (palette, colours) {
+                (Some(n), Some(c)) => app.set_status(
+                    crate::i18n::format("ui.saved_for_slicer", &[("path", path), ("slots", &n.to_string()), ("colours", &c.to_string())]),
+                    false,
+                ),
+                _ => app.set_status(crate::i18n::format("ui.saved_to", &[("path", path)]), false),
+            },
         },
     }
 }
@@ -478,6 +499,7 @@ mod tests {
             max_colors: 6,
             face_colors: false,
             visible_only: true,
+            assembly: false,
             printer: presets.printer,
             process: presets.process,
             filament: " Bambu PETG Basic @BBL P2S 0.4 nozzle ".into(),
@@ -511,6 +533,11 @@ mod tests {
             p,
             json!({"format": "obj", "bodies": ["A"], "slicer_compat": "bambu", "max_colors": 6, "face_colors": false, "visible_only": true})
         );
+        let mut whole = dialog(1, 0);
+        whole.assembly = true;
+        whole.max_colors = 32;
+        let (_, p) = commands(&whole, &picked(&["A"])).unwrap().remove(0);
+        assert_eq!((p["assembly"].clone(), p["max_colors"].clone()), (json!(true), json!(32)));
         assert_eq!(format_and_ext(&dialog(1, 1)), ("obj", "obj"));
         let mut empty = dialog(1, 0);
         empty.printer = "  ".into();

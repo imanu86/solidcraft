@@ -16,8 +16,14 @@
 //!   presets by name. Without the names, the nozzle, the printable height or a per-filament list
 //!   (`filament_ids` among them, even empty) the program does not load the project, or fails when
 //!   it saves it sliced; the settings left out take Bambu Studio's own values.
-//! - A triangle painted with filament `e` carries `paint_color`: `4` for 1, `8` for 2, and from 3
-//!   on the hexadecimal digit of `e - 3` followed by `C` (`0C` … `DC` for 16).
+//! - An assembly (`SlicerOptions::assembly`) is one object whose components are the bodies, all
+//!   in `3D/Objects/object_1.model`, each placed by the translation of its centre; in the
+//!   settings the object has a `<part>` per body with its name, `matrix` (that placement) and
+//!   `extruder`. Bambu Studio sets separate objects down on the plate each on its own, which
+//!   breaks up an assembly; the parts of one object keep their places.
+//! - A triangle painted with filament `e` carries `paint_color` ([`paint_code`]): `4` for 1, `8`
+//!   for 2, `0C` … `EC` for 3 to 17 and `0FC` … `EFC` for 18 to 32. Projects of up to 32
+//!   filaments load, slice and save again.
 //!
 //! Mixed filaments (Bambu Studio 2.5.3 and later) are not written: their settings are not known
 //! yet. [`FilamentSlot`] is where such a slot would go.
@@ -25,7 +31,7 @@
 use std::fmt::Write as _;
 use std::io::{Cursor, Write};
 
-use crate::slicer::{BambuPresets, DEFAULT_COLOR, Rgba, SlicerExport, SlicerOptions, Usage, hex, rgba};
+use crate::slicer::{BambuPresets, DEFAULT_COLOR, Rgba, SlicerExport, SlicerOptions, Usage, area, hex, rgba};
 use crate::threemf::{MeshObject, esc, indexed};
 use crate::{IoError, Result};
 
@@ -49,12 +55,16 @@ pub struct FilamentSlot {
     pub color: Rgba,
 }
 
-/// Bambu Studio's `paint_color` for a whole triangle painted with filament `e` (from 1).
+/// Bambu Studio's `paint_color` for a whole triangle painted with filament `e` (from 1): `4`,
+/// `8`, then the hexadecimal digit of `e - 3` and `C` up to 17 (`EC`), then that of `e - 18` and
+/// `FC` up to 32 (`EFC`). Worked out by slicing triangles painted with each code and weighing the
+/// filaments (17, 18, 19, 20, 24, 31 and 32 checked); `FC` alone is not a filament.
 pub fn paint_code(e: usize) -> Option<String> {
     match e {
         1 => Some("4".into()),
         2 => Some("8".into()),
-        3..=18 => Some(format!("{:X}C", e - 3)),
+        3..=17 => Some(format!("{:X}C", e - 3)),
+        18..=32 => Some(format!("{:X}FC", e - 18)),
         _ => None,
     }
 }
@@ -73,9 +83,11 @@ struct Part {
 
 /// A Bambu Studio project of `objects` (one per body): one filament per colour, up to the limit
 /// of `options` (16 at most), each body on the filament most of it uses, and with
-/// `options.face_colors` the triangles of other colours painted. `metadata` goes into the model
-/// (3MF names such as `Title`).
-pub fn write_bambu_3mf(objects: &[MeshObject], options: &SlicerOptions, metadata: &[(&str, &str)]) -> Result<SlicerExport> {
+/// `options.face_colors` the triangles of other colours painted. With `options.assembly` the
+/// bodies are the parts of one object named `name`, each with its own filament, so they stay
+/// where they are relative to each other (separate objects each stand on the plate). `metadata`
+/// goes into the model (3MF names such as `Title`).
+pub fn write_bambu_3mf(objects: &[MeshObject], options: &SlicerOptions, name: &str, metadata: &[(&str, &str)]) -> Result<SlicerExport> {
     if objects.is_empty() {
         return Err(IoError::Empty);
     }
@@ -92,13 +104,13 @@ pub fn write_bambu_3mf(objects: &[MeshObject], options: &SlicerOptions, metadata
                 _ => own,
             })
             .collect();
-        for c in &colors {
-            usage.add(*c, 1);
+        for (c, t) in colors.iter().zip(&tris) {
+            usage.add(*c, area(&verts, t.v));
         }
         shapes.push((o.name.clone(), verts, tris.into_iter().map(|t| t.v).collect::<Vec<_>>(), colors));
     }
     let palette = usage.palette(options.limit());
-    let slots: Vec<FilamentSlot> = palette.colors.iter().map(|c| FilamentSlot { color: *c }).collect();
+    let slots: Vec<FilamentSlot> = palette.slots.iter().map(|s| FilamentSlot { color: s.color }).collect();
     // Placement: the model's centre over the plate's, standing on it.
     let mut lo = [f64::INFINITY; 3];
     let mut hi = [f64::NEG_INFINITY; 3];
@@ -139,13 +151,13 @@ pub fn write_bambu_3mf(objects: &[MeshObject], options: &SlicerOptions, metadata
         let centre = [centre[0] + shift[0], centre[1] + shift[1], centre[2] + shift[2]];
         parts.push(Part { name, vertices, centre, triangles, filaments, extruder });
     }
-    let bytes = package(&parts, &slots, &options.presets, metadata, options.face_colors)?;
+    let bytes = package(&parts, &slots, options, name, metadata)?;
     Ok(SlicerExport {
         bytes,
         mtl: None,
-        colors: palette.colors.iter().zip(&palette.triangles).map(|(c, n)| (hex(*c), *n)).collect(),
+        colors: palette.slots.clone(),
         distinct_colors: usage.distinct(),
-        merged_colors: palette.merged,
+        merged_colors: palette.merged(),
         painted_triangles: if options.face_colors { painted } else { 0 },
         extruders: parts.iter().map(|p| p.extruder).collect(),
         bodies: parts.len(),
@@ -167,11 +179,8 @@ fn model_open(x: &mut String) {
     );
 }
 
-/// `3D/Objects/object_<n>.model`: one body's mesh.
-fn object_part(p: &Part, id: usize, index: usize, paint: bool) -> String {
-    let mut x = String::with_capacity(64 + p.vertices.len() * 48 + p.triangles.len() * 48);
-    model_open(&mut x);
-    x.push_str(" <metadata name=\"BambuStudio:3mfVersion\">1</metadata>\n <resources>\n");
+/// One body's mesh object (`id`), its triangles of other filaments painted.
+fn mesh_object(x: &mut String, p: &Part, id: usize, index: usize, paint: bool) {
     let _ = writeln!(x, "  <object id=\"{id}\" p:UUID=\"{}\" type=\"model\">", uuid(1, index));
     x.push_str("   <mesh>\n    <vertices>\n");
     for v in &p.vertices {
@@ -188,19 +197,81 @@ fn object_part(p: &Part, id: usize, index: usize, paint: bool) -> String {
         }
         x.push_str("/>\n");
     }
-    x.push_str("    </triangles>\n   </mesh>\n  </object>\n </resources>\n <build/>\n</model>\n");
+    x.push_str("    </triangles>\n   </mesh>\n  </object>\n");
+}
+
+/// A model part holding the mesh objects of `parts`, numbered from `first_id`.
+fn objects_part(parts: &[&Part], first_id: usize, first_index: usize, paint: bool) -> String {
+    let size: usize = parts.iter().map(|p| p.vertices.len() * 48 + p.triangles.len() * 48 + 128).sum();
+    let mut x = String::with_capacity(256 + size);
+    model_open(&mut x);
+    x.push_str(" <metadata name=\"BambuStudio:3mfVersion\">1</metadata>\n <resources>\n");
+    for (k, p) in parts.iter().enumerate() {
+        mesh_object(&mut x, p, first_id + k, first_index + k, paint);
+    }
+    x.push_str(" </resources>\n <build/>\n</model>\n");
+    x
+}
+
+/// The root model's head: namespaces and metadata.
+fn root_open(x: &mut String, metadata: &[(&str, &str)]) {
+    model_open(x);
+    let _ = writeln!(x, " <metadata name=\"Application\">BambuStudio-{BAMBU_VERSION}</metadata>");
+    x.push_str(" <metadata name=\"BambuStudio:3mfVersion\">1</metadata>\n");
+    for (name, text) in metadata {
+        let _ = writeln!(x, " <metadata name=\"{}\">{}</metadata>", esc(name), esc(text));
+    }
+}
+
+/// `3D/3dmodel.model` of an assembly: one object whose components are the bodies, each at its
+/// place (the translation of its centre), all in `3D/Objects/object_1.model`.
+fn root_model_assembly(parts: &[Part], name: &str, metadata: &[(&str, &str)]) -> String {
+    let mut x = String::new();
+    root_open(&mut x, metadata);
+    let id = parts.len() + 1;
+    let _ = writeln!(x, " <resources>\n  <object id=\"{id}\" p:UUID=\"{}\" type=\"model\" name=\"{}\">\n   <components>", uuid(2, 0), esc(name));
+    for (k, p) in parts.iter().enumerate() {
+        let c = p.centre;
+        let _ = writeln!(
+            x,
+            "    <component p:path=\"/3D/Objects/object_1.model\" objectid=\"{}\" p:UUID=\"{}\" transform=\"1 0 0 0 1 0 0 0 1 {} {} {}\"/>",
+            k + 1,
+            uuid(3, k),
+            c[0] as f32,
+            c[1] as f32,
+            c[2] as f32
+        );
+    }
+    x.push_str("   </components>\n  </object>\n");
+    let _ = writeln!(x, " </resources>\n <build p:UUID=\"{}\">", uuid(4, 0));
+    let _ = writeln!(x, "  <item objectid=\"{id}\" p:UUID=\"{}\" transform=\"1 0 0 0 1 0 0 0 1 0 0 0\" printable=\"1\"/>", uuid(5, 0));
+    x.push_str(" </build>\n</model>\n");
+    x
+}
+
+/// `Metadata/model_settings.config` of an assembly: the object's name, and per part its name,
+/// placement and filament.
+fn model_settings_assembly(parts: &[Part], name: &str) -> String {
+    let mut x = String::from(XML_HEAD);
+    x.push_str("<config>\n");
+    let _ = writeln!(x, "  <object id=\"{}\">\n    <metadata key=\"name\" value=\"{}\"/>", parts.len() + 1, esc(name));
+    for (k, p) in parts.iter().enumerate() {
+        let c = p.centre;
+        let _ = writeln!(x, "    <part id=\"{}\" subtype=\"normal_part\">", k + 1);
+        let _ = writeln!(x, "      <metadata key=\"name\" value=\"{}\"/>", esc(&p.name));
+        let _ = writeln!(x, "      <metadata key=\"matrix\" value=\"1 0 0 {} 0 1 0 {} 0 0 1 {} 0 0 0 1\"/>", c[0] as f32, c[1] as f32, c[2] as f32);
+        let _ = writeln!(x, "      <metadata key=\"extruder\" value=\"{}\"/>", p.extruder);
+        x.push_str("    </part>\n");
+    }
+    x.push_str("  </object>\n");
+    x.push_str(PLATE);
     x
 }
 
 /// `3D/3dmodel.model`: an object per body placing its part, and a build item per object.
 fn root_model(parts: &[Part], metadata: &[(&str, &str)]) -> String {
     let mut x = String::new();
-    model_open(&mut x);
-    let _ = writeln!(x, " <metadata name=\"Application\">BambuStudio-{BAMBU_VERSION}</metadata>");
-    x.push_str(" <metadata name=\"BambuStudio:3mfVersion\">1</metadata>\n");
-    for (name, text) in metadata {
-        let _ = writeln!(x, " <metadata name=\"{}\">{}</metadata>", esc(name), esc(text));
-    }
+    root_open(&mut x, metadata);
     x.push_str(" <resources>\n");
     for (k, p) in parts.iter().enumerate() {
         let _ = writeln!(x, "  <object id=\"{}\" p:UUID=\"{}\" type=\"model\" name=\"{}\">\n   <components>", 2 * k + 2, uuid(2, k), esc(&p.name));
@@ -243,9 +314,12 @@ fn model_settings(parts: &[Part]) -> String {
         let _ = writeln!(x, "      <metadata key=\"name\" value=\"{name}\"/>");
         x.push_str("      <metadata key=\"matrix\" value=\"1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1\"/>\n    </part>\n  </object>\n");
     }
-    x.push_str("  <plate>\n    <metadata key=\"plater_id\" value=\"1\"/>\n    <metadata key=\"plater_name\" value=\"\"/>\n    <metadata key=\"locked\" value=\"false\"/>\n  </plate>\n</config>\n");
+    x.push_str(PLATE);
     x
 }
+
+/// The plate and the end of `model_settings.config`.
+const PLATE: &str = "  <plate>\n    <metadata key=\"plater_id\" value=\"1\"/>\n    <metadata key=\"plater_name\" value=\"\"/>\n    <metadata key=\"locked\" value=\"false\"/>\n  </plate>\n</config>\n";
 
 /// The material type a filament preset name says (`Bambu PETG Basic …` → `PETG`), else `PLA`.
 fn filament_type(preset: &str) -> &'static str {
@@ -312,13 +386,15 @@ fn project_settings(slots: &[FilamentSlot], presets: &BambuPresets) -> String {
     serde_json::to_string_pretty(&config).unwrap_or_default()
 }
 
-fn package(parts: &[Part], slots: &[FilamentSlot], presets: &BambuPresets, metadata: &[(&str, &str)], paint: bool) -> Result<Vec<u8>> {
+fn package(parts: &[Part], slots: &[FilamentSlot], options: &SlicerOptions, name: &str, metadata: &[(&str, &str)]) -> Result<Vec<u8>> {
+    let paint = options.face_colors;
+    let assembly = options.assembly;
     let content_types = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">\n <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>\n <Default Extension=\"model\" ContentType=\"application/vnd.ms-package.3dmanufacturing-3dmodel+xml\"/>\n <Default Extension=\"config\" ContentType=\"text/xml\"/>\n</Types>\n";
     let rels = format!(
         "{XML_HEAD}<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n <Relationship Target=\"/3D/3dmodel.model\" Id=\"rel-1\" Type=\"{MODEL_REL}\"/>\n</Relationships>\n"
     );
     let mut model_rels = format!("{XML_HEAD}<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n");
-    for k in 0..parts.len() {
+    for k in 0..if assembly { 1 } else { parts.len() } {
         let _ = writeln!(model_rels, " <Relationship Target=\"/3D/Objects/object_{}.model\" Id=\"rel-{}\" Type=\"{MODEL_REL}\"/>", k + 1, k + 1);
     }
     model_rels.push_str("</Relationships>\n");
@@ -333,13 +409,20 @@ fn package(parts: &[Part], slots: &[FilamentSlot], presets: &BambuPresets, metad
     };
     add("[Content_Types].xml", content_types.as_bytes())?;
     add("_rels/.rels", rels.as_bytes())?;
-    add("3D/3dmodel.model", root_model(parts, metadata).as_bytes())?;
-    add("3D/_rels/3dmodel.model.rels", model_rels.as_bytes())?;
-    for (k, p) in parts.iter().enumerate() {
-        add(&format!("3D/Objects/object_{}.model", k + 1), object_part(p, 2 * k + 1, k, paint).as_bytes())?;
+    if assembly {
+        add("3D/3dmodel.model", root_model_assembly(parts, name, metadata).as_bytes())?;
+        add("3D/_rels/3dmodel.model.rels", model_rels.as_bytes())?;
+        add("3D/Objects/object_1.model", objects_part(&parts.iter().collect::<Vec<_>>(), 1, 0, paint).as_bytes())?;
+        add("Metadata/model_settings.config", model_settings_assembly(parts, name).as_bytes())?;
+    } else {
+        add("3D/3dmodel.model", root_model(parts, metadata).as_bytes())?;
+        add("3D/_rels/3dmodel.model.rels", model_rels.as_bytes())?;
+        for (k, p) in parts.iter().enumerate() {
+            add(&format!("3D/Objects/object_{}.model", k + 1), objects_part(&[p], 2 * k + 1, k, paint).as_bytes())?;
+        }
+        add("Metadata/model_settings.config", model_settings(parts).as_bytes())?;
     }
-    add("Metadata/model_settings.config", model_settings(parts).as_bytes())?;
-    add("Metadata/project_settings.config", project_settings(slots, presets).as_bytes())?;
+    add("Metadata/project_settings.config", project_settings(slots, &options.presets).as_bytes())?;
     zip.finish().map(|c| c.into_inner()).map_err(|e| IoError::Invalid(format!("3MF: {e}")))
 }
 

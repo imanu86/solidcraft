@@ -48,12 +48,12 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("file.export", "Export", export)
         .icon("export")
         .noundo()
-        .params("path; format?: stl|stla|obj|step|3mf|3mf-tagged|urdf|json (default from extension; 3mf-tagged: 3MF whose triangles carry their B-rep face, at full precision, for meshing and analysis tools; docs/formats/3mf-face-tags.md; urdf: the whole assembly as a robot, with STL meshes written next to it; docs/urdf.md); bodies?: [names] (JSON and URDF export the complete design); visible_only?: bool (only the bodies shown in the view; default false: hidden bodies too); urdf only: mesh_prefix? (before each mesh file name, e.g. package://robot/meshes/), effort? (default 1000), velocity? (default 10); slicer_compat?: none|bambu (default none: the plain file; bambu: for Bambu Studio, with format 3mf a project with one filament per colour, each body on its colour's filament and faces of other colours painted, with format obj an OBJ with its colours in an MTL file next to it; docs/formats/slicer-export.md); mtl?: bool (obj: write the colours as an MTL file next to it, one material per colour; default false, always with bambu); max_colors? (most filaments or materials: 1-16 with bambu, default 16; the colours covering the most triangles keep theirs, the others take the nearest); face_colors?: bool (faces with colours of their own keep them; default true); bambu 3mf only: printer?, process?, filament? (Bambu Studio preset names the project names; default Bambu Lab P2S 0.4 nozzle, 0.20mm Standard @BBL P2S, Bambu PLA Basic @BBL P2S) → with slicer_compat or mtl also: files, bodies, filaments (3mf) or materials (obj): [{color, triangles}], distinct_colors, merged_colors; 3mf: extruders (each body's filament), painted_triangles"),
+        .params("path; format?: stl|stla|obj|step|3mf|3mf-tagged|urdf|json (default from extension; 3mf-tagged: 3MF whose triangles carry their B-rep face, at full precision, for meshing and analysis tools; docs/formats/3mf-face-tags.md; urdf: the whole assembly as a robot, with STL meshes written next to it; docs/urdf.md); bodies?: [names] (JSON and URDF export the complete design); visible_only?: bool (only the bodies shown in the view; default false: hidden bodies too); urdf only: mesh_prefix? (before each mesh file name, e.g. package://robot/meshes/), effort? (default 1000), velocity? (default 10); slicer_compat?: none|bambu (default none: the plain file; bambu: for Bambu Studio, with format 3mf a project with one filament per colour, each body on its colour's filament and faces of other colours painted, with format obj an OBJ with its colours in an MTL file next to it; docs/formats/slicer-export.md); mtl?: bool (obj: write the colours as an MTL file next to it, one material per colour; default false, always with bambu); max_colors? (most filaments or materials: 1-32 with bambu, default 16; over it the closest colours share one, merged in CIELAB by the area they cover so near greys fuse before a rare distinct colour); face_colors?: bool (faces with colours of their own keep them; default true); assembly?: bool (the bodies as one assembly named after the file, each where it is: with bambu 3mf one object with a part per body, each part on its own filament; with obj one object with a group per body; default false: an object per body, which Bambu Studio sets down on the plate each on its own); bambu 3mf only: printer?, process?, filament? (Bambu Studio preset names the project names; default Bambu Lab P2S 0.4 nozzle, 0.20mm Standard @BBL P2S, Bambu PLA Basic @BBL P2S) → with slicer_compat or mtl also: files, bodies, filaments (3mf) or materials (obj): [{color, triangles, area_mm2, merged, sources}], distinct_colors, merged_colors; 3mf: extruders (each body's filament), painted_triangles"),
     CommandSpec::new("file.save_mesh", "Save As Mesh", save_mesh)
         .at("MESH", "MODIFY")
         .icon("mesh_export")
         .noundo()
-        .params("path; format?: stl|3mf|3mf-tagged|obj (default from the extension, else stl; 3mf-tagged: docs/formats/3mf-face-tags.md); bodies?: [names] (default: all); visible_only?: bool (only the bodies shown in the view; default false); ascii?: bool (STL); slicer?: id, name or program path from file.slicers (open the saved file there); slicer_compat?, mtl?, max_colors?, face_colors?, printer?, process?, filament? (as file.export)"),
+        .params("path; format?: stl|3mf|3mf-tagged|obj (default from the extension, else stl; 3mf-tagged: docs/formats/3mf-face-tags.md); bodies?: [names] (default: all); visible_only?: bool (only the bodies shown in the view; default false); ascii?: bool (STL); slicer?: id, name or program path from file.slicers (open the saved file there); slicer_compat?, mtl?, max_colors?, face_colors?, assembly?, printer?, process?, filament? (as file.export)"),
     CommandSpec::new("file.slicers", "Installed Slicers", slicers).icon("export")
         .noundo()
         .params("→ the slicers found on this machine: [{id, name, icon?}]; pass an id or name as file.save_mesh's `slicer`"),
@@ -537,7 +537,7 @@ fn slicer_options(p: &Value, format: Format, cmd: &str) -> Result<Option<SlicerO
         return Err(bad(cmd, "`mtl` applies to obj exports only"));
     }
     if target == SlicerTarget::None && !mtl {
-        if let Some(k) = ["max_colors", "face_colors", "printer", "process", "filament"].into_iter().find(|k| given(k)) {
+        if let Some(k) = ["max_colors", "face_colors", "assembly", "printer", "process", "filament"].into_iter().find(|k| given(k)) {
             return Err(bad(cmd, format!("`{k}` applies to exports with slicer_compat \"bambu\" or mtl: true")));
         }
         return Ok(None);
@@ -568,7 +568,14 @@ fn slicer_options(p: &Value, format: Format, cmd: &str) -> Result<Option<SlicerO
             }
         }
     }
-    Ok(Some(SlicerOptions { target, max_colors, face_colors: flag("face_colors")?.unwrap_or(true), mtl, presets }))
+    Ok(Some(SlicerOptions {
+        target,
+        max_colors,
+        face_colors: flag("face_colors")?.unwrap_or(true),
+        mtl,
+        assembly: flag("assembly")?.unwrap_or(false),
+        presets,
+    }))
 }
 
 /// A mesh export made for a slicer: a Bambu Studio project 3MF, or OBJ with an MTL file next to
@@ -577,7 +584,8 @@ fn export_for_slicer(s: &Session, path: &str, format: Format, bodies: &[String],
     let file = std::path::Path::new(path);
     let mtl_path = (format == Format::Obj).then(|| file.with_extension("mtl"));
     let mtl_name = mtl_path.as_deref().and_then(std::path::Path::file_name).map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    let out = solidcraft_io::export_for_slicer(&s.doc.painted(&s.world_state()), bodies, format, &s.doc.metadata, options, &mtl_name)?;
+    let name = file.file_stem().map(|x| x.to_string_lossy().to_string()).filter(|n| !n.trim().is_empty()).unwrap_or_else(|| s.doc.name.clone());
+    let out = solidcraft_io::export_for_slicer(&s.doc.painted(&s.world_state()), bodies, format, &name, &s.doc.metadata, options, &mtl_name)?;
     let mut files = Vec::new();
     if let (Some(mtl_path), Some(mtl)) = (&mtl_path, &out.mtl) {
         let mtl_path = mtl_path.to_string_lossy().to_string();
@@ -588,7 +596,21 @@ fn export_for_slicer(s: &Session, path: &str, format: Format, bodies: &[String],
     }
     solidcraft_io::vfs::write(path, &out.bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     files.push(path.to_string());
-    let colors: Vec<Value> = out.colors.iter().map(|(c, n)| json!({"color": c, "triangles": n})).collect();
+    let hex = |c: [u8; 4]| format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2]);
+    // The palette: each slot, what it covers and the design's colours it stands for.
+    let colors: Vec<Value> = out
+        .colors
+        .iter()
+        .map(|slot| {
+            json!({
+                "color": hex(slot.color),
+                "triangles": slot.triangles,
+                "area_mm2": (slot.area * 100.0).round() / 100.0,
+                "merged": slot.sources.len(),
+                "sources": slot.sources.iter().map(|c| hex(*c)).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
     let mut r = json!({
         "path": path,
         "bytes": out.bytes.len(),
