@@ -62,7 +62,7 @@ impl MeshObject {
     }
 }
 
-fn esc(s: &str) -> String {
+pub(crate) fn esc(s: &str) -> String {
     let mut o = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
@@ -79,15 +79,15 @@ fn esc(s: &str) -> String {
 }
 
 /// A triangle as written: its vertices, its colour entry (0: the object's own) and its face.
-struct Tri {
-    v: [u32; 3],
-    look: u32,
-    face: u32,
+pub(crate) struct Tri {
+    pub(crate) v: [u32; 3],
+    pub(crate) look: u32,
+    pub(crate) face: u32,
 }
 
 /// Shared vertices, merged at the precision they are written in (single, or double for tagged
 /// objects), and non-degenerate triangles.
-fn indexed(m: &MeshObject) -> (Vec<[f64; 3]>, Vec<Tri>) {
+pub(crate) fn indexed(m: &MeshObject) -> (Vec<[f64; 3]>, Vec<Tri>) {
     let exact = m.tagged();
     let mut map: HashMap<[u64; 3], u32> = HashMap::new();
     let mut verts: Vec<[f64; 3]> = Vec::new();

@@ -182,6 +182,19 @@ construction plane.
 - **For translators:** French uses *fonction* for a timeline feature, so "AI features" had to
   become *fonctionnalités IA*. Translate "feature" only in the timeline sense.
 
+### filament
+
+One of the slicer's printing materials a mesh export made for a slicer assigns colours to.
+
+Each colour of the exported bodies (up to the limit asked for) becomes one filament, numbered
+from 1. A filament is the slicer's idea; in SolidCraft a body has an appearance and a material.
+
+- **In SolidCraft:** the `filaments` and `max_colors` of `file.export` and `file.save_mesh` with
+  `slicer_compat`.
+- **Don't use:** extruder (for the material), spool, colour slot.
+- **Elsewhere:** filament, AMS slot, extruder.
+- **For translators:** the printing material of a 3D printer, not a thread or fibre in general.
+
 ### folder
 
 One of the browser's fixed sections of a component: Bodies, Sketches, Construction, Joints.
@@ -290,6 +303,17 @@ A point or a curve in a sketch.
 - **Don't use:** geometry (for sketch content), element, object.
 - **Elsewhere:** sketch entity, sketch geometry, sketch element.
 - **For translators:** "entity" names both points and curves.
+
+### slicer compatibility
+
+Whom a mesh export is made for: no one in particular (a plain file), or a named slicer whose own
+project layout the file then follows.
+
+- **In SolidCraft:** the `slicer_compat` parameter of `file.export` and `file.save_mesh`; the
+  Slicer compatibility row of Save as mesh.
+- **Don't use:** slicer profile, slicer mode.
+- **Elsewhere:** export for slicer, slicer project.
+- **For translators:** not the slicer program chosen by Send to slicer.
 
 ### standard part
 

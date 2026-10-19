@@ -10,6 +10,7 @@
 | 3MF, STL, OBJ | mesh bodies | yes |
 | glTF 2.0 (`.glb`, `.gltf` with its `.bin` files) | mesh bodies in the node tree's components, materials as appearances | |
 | 3MF with face tags | as 3MF | each triangle tagged with its B-rep face, exact coordinates |
+| Bambu Studio project (3MF), OBJ with MTL | as 3MF, OBJ | one filament (or material) per colour, faces of other colours painted |
 | URDF | | the assembly as a robot: links with meshes, mass and inertia, joints from the assembly's joints |
 | DXF, SVG | into a sketch | sketches and flat patterns as DXF |
 | PNG, JPEG | canvases and decals | |
@@ -48,6 +49,17 @@ ordinary 3MF in which every triangle also names the B-rep face it lies on and ev
 is the tessellation's own double-precision value. Meshing and analysis tools can use the tags to
 keep a model's faces (for loads, boundary conditions or feature edges); other 3MF readers ignore
 them. The format is specified in [`docs/formats/3mf-face-tags.md`](https://github.com/bherbruck/solidcraft/blob/main/docs/formats/3mf-face-tags.md).
+
+**Slicer compatibility** in **File → Save as mesh…** is **None** at first, and the file is
+then saved exactly as before. **Bambu Studio** makes the file for Bambu Studio: a project 3MF with
+one filament per colour, each body on the filament of its colour and the faces with colours of
+their own painted with theirs, or an OBJ with its colours in an MTL file next to it. Further rows
+set the most colours (1 to 16: the colours covering the most triangles keep a filament of their
+own, the others take the nearest), whether faces keep their own colours, whether only the visible
+bodies go (on at first), and the Bambu Studio printer, process and filament presets the project
+names. Scripts and agents use `file.export` or `file.save_mesh` with `slicer_compat: "bambu"`
+(and `mtl: true` writes the MTL file for any OBJ export; `visible_only: true` leaves hidden bodies
+out of any export). See [`docs/formats/slicer-export.md`](https://github.com/bherbruck/solidcraft/blob/main/docs/formats/slicer-export.md).
 
 **File → Export URDF…** (`file.export` with a `.urdf` path) writes the assembly for robot
 simulators and ROS: a link per component placement with its mesh, mass and inertia, and the

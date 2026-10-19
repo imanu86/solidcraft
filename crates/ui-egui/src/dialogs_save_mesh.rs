@@ -1,6 +1,11 @@
 //! The Save as mesh dialog (`file.save_mesh`): which bodies, the mesh format, and optionally a
 //! slicer to open the saved file in.
 //!
+//! Slicer compatibility (docs/formats/slicer-export.md) is off by default, and the file is then
+//! saved exactly as before. With Bambu Studio the format is a Bambu Studio project 3MF or OBJ with
+//! an MTL file, and further rows choose the most colours (filaments), whether faces keep their own
+//! colours, whether only visible bodies go, and the presets the project names.
+//!
 //! Every place that saves a mesh opens this dialog: File › Save as mesh, the Mesh tab, and the
 //! Save As Mesh item of the body menus. The slicer list holds the programs the user added (kept
 //! between runs, newest first), then the slicers found on this machine, then "Custom…", which asks
@@ -22,6 +27,12 @@ use crate::theme::Tokens;
 /// The formats, as shown and as `file.save_mesh` names them.
 /// (label, `format` parameter, file extension).
 const FORMATS: [(&str, &str, &str); 3] = [("STL", "stl", "stl"), ("3MF", "3mf", "3mf"), ("3MF with face tags", "3mf-tagged", "3mf")];
+/// The slicers a file can be made for, as shown and as `slicer_compat` names them.
+const COMPAT: [(&str, &str); 2] = [("ui.slicer_compat_none", "none"), ("Bambu Studio", "bambu")];
+/// The formats of a Bambu Studio export: (label, `format` parameter, file extension).
+const BAMBU_FORMATS: [(&str, &str, &str); 2] = [("ui.bambu_format_project", "3mf", "3mf"), ("ui.bambu_format_obj", "obj", "obj")];
+/// The most filaments a Bambu Studio file has.
+const MAX_COLORS: u32 = solidcraft_engine::io::MAX_BAMBU_FILAMENTS as u32;
 /// Edge of a slicer's icon in the list.
 const ICON: f32 = 16.0;
 /// Most programs the user can keep in the list.
@@ -31,6 +42,16 @@ const MAX_CUSTOM: usize = 24;
 #[derive(Clone, Debug, PartialEq)]
 pub struct SaveMesh {
     format: usize,
+    /// Made for a slicer: an index into [`COMPAT`] (0: none, the plain file).
+    compat: usize,
+    /// The Bambu Studio format: an index into [`BAMBU_FORMATS`].
+    bambu_format: usize,
+    max_colors: u32,
+    face_colors: bool,
+    visible_only: bool,
+    printer: String,
+    process: String,
+    filament: String,
     send: bool,
     /// The chosen slicer: an installed one's id, or the path of one the user added.
     slicer: String,
@@ -82,7 +103,20 @@ pub fn start(app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
     }
     let p = &app.preferences;
     let format = FORMATS.iter().position(|f| f.1 == p.save_mesh_format).unwrap_or(0);
-    let kind = Kind::SaveMesh(SaveMesh { format, send: p.save_mesh_send, slicer: p.save_mesh_slicer.clone(), stale: true });
+    let kind = Kind::SaveMesh(SaveMesh {
+        format,
+        compat: COMPAT.iter().position(|c| c.1 == p.save_mesh_slicer_compat).unwrap_or(0),
+        bambu_format: BAMBU_FORMATS.iter().position(|f| f.1 == p.save_mesh_bambu_format).unwrap_or(0),
+        max_colors: p.save_mesh_max_colors.clamp(1, MAX_COLORS),
+        face_colors: p.save_mesh_face_colors,
+        visible_only: p.save_mesh_visible_only,
+        printer: p.bambu_printer.clone(),
+        process: p.bambu_process.clone(),
+        filament: p.bambu_filament.clone(),
+        send: p.save_mesh_send,
+        slicer: p.save_mesh_slicer.clone(),
+        stale: true,
+    });
     Some((kind, vec![SelInput::new("Bodies", BODIES, true)]))
 }
 
@@ -144,9 +178,16 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut SaveMesh) -> bool {
         }
         k.send &= !entries.is_empty();
     }
-    row_label(ui, "Format");
-    combo(ui, "sm_format", &FORMATS.map(|f| f.0), &mut k.format);
+    row_label(ui, "ui.slicer_compat");
+    combo(ui, "sm_compat", &COMPAT.map(|c| c.0), &mut k.compat);
     ui.end_row();
+    if bambu(k) {
+        bambu_rows(ui, k);
+    } else {
+        row_label(ui, "Format");
+        combo(ui, "sm_format", &FORMATS.map(|f| f.0), &mut k.format);
+        ui.end_row();
+    }
 
     // A browser has no installed programs to send a file to.
     if app.services.pick_program.is_none() {
@@ -168,6 +209,51 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut SaveMesh) -> bool {
     ui.add_enabled_ui(k.send && !choosing, |ui| slicer_combo(app, ui, k));
     ui.end_row();
     false
+}
+
+/// Made for Bambu Studio.
+fn bambu(k: &SaveMesh) -> bool {
+    COMPAT.get(k.compat).is_some_and(|c| c.1 == "bambu")
+}
+
+/// The Bambu Studio project format (not OBJ).
+fn bambu_project(k: &SaveMesh) -> bool {
+    BAMBU_FORMATS.get(k.bambu_format).is_some_and(|f| f.1 == "3mf")
+}
+
+/// The rows of a Bambu Studio export: format, colours, visible bodies and (for a project) presets.
+fn bambu_rows(ui: &mut egui::Ui, k: &mut SaveMesh) {
+    row_label(ui, "Format");
+    combo(ui, "sm_bambu_format", &BAMBU_FORMATS.map(|f| f.0), &mut k.bambu_format);
+    ui.end_row();
+    row_label(ui, "ui.max_colors");
+    let r = ui.add(egui::DragValue::new(&mut k.max_colors).range(1..=MAX_COLORS).speed(0.1));
+    crate::scenario::publish_handle("dialog:max_colors", r.rect.center());
+    r.on_hover_text(crate::i18n::tr("ui.max_colors_tip"));
+    ui.end_row();
+    row_label(ui, "ui.face_colors");
+    crate::dialogs::check(ui, &mut k.face_colors);
+    ui.end_row();
+    row_label(ui, "ui.visible_only");
+    crate::dialogs::check(ui, &mut k.visible_only);
+    ui.end_row();
+    if bambu_project(k) {
+        for (label, value) in [("ui.bambu_printer", &mut k.printer), ("ui.bambu_process", &mut k.process), ("ui.bambu_filament", &mut k.filament)] {
+            row_label(ui, label);
+            let r = ui.add(egui::TextEdit::singleline(value).desired_width(crate::dialogs::FIELD_W * 1.6));
+            crate::scenario::publish_handle(&format!("dialog:{label}"), r.rect.center());
+            ui.end_row();
+        }
+    }
+}
+
+/// The format parameter and file extension the dialog saves with.
+fn format_and_ext(k: &SaveMesh) -> (&'static str, &'static str) {
+    if bambu(k) {
+        BAMBU_FORMATS.get(k.bambu_format).map_or(("3mf", "3mf"), |f| (f.1, f.2))
+    } else {
+        FORMATS.get(k.format).map_or(("stl", "stl"), |f| (f.1, f.2))
+    }
 }
 
 fn slicer_combo(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut SaveMesh) {
@@ -276,8 +362,23 @@ fn bodies(inputs: &[SelInput]) -> Vec<String> {
 
 /// What the Save (or Send) button asks `file.save_mesh` to do, without the file name.
 pub fn commands(k: &SaveMesh, inputs: &[SelInput]) -> Result<Vec<(String, Value)>, String> {
-    let format = FORMATS.get(k.format).map_or("stl", |f| f.1);
+    let (format, _) = format_and_ext(k);
     let mut p = json!({ "format": format });
+    if bambu(k) {
+        p["slicer_compat"] = json!("bambu");
+        p["max_colors"] = json!(k.max_colors.clamp(1, MAX_COLORS));
+        p["face_colors"] = json!(k.face_colors);
+        p["visible_only"] = json!(k.visible_only);
+        if bambu_project(k) {
+            for (key, value) in [("printer", &k.printer), ("process", &k.process), ("filament", &k.filament)] {
+                let value = value.trim();
+                if value.is_empty() {
+                    return Err(crate::i18n::tr("ui.bambu_preset_missing").into());
+                }
+                p[key] = json!(value);
+            }
+        }
+    }
     let names = bodies(inputs);
     if names.is_empty() {
         return Err(crate::i18n::tr("ui.save_mesh_pick_bodies").into());
@@ -306,10 +407,22 @@ pub fn button(k: &SaveMesh) -> &'static str {
 /// slicer with it, with no file dialog.
 pub fn run(app: &mut SolveApp, k: &SaveMesh, inputs: &[SelInput]) -> Result<(), String> {
     let (_, params) = commands(k, inputs)?.into_iter().next().ok_or("nothing to save")?;
-    let (format, ext) = FORMATS.get(k.format).map_or(("stl", "stl"), |f| (f.1, f.2));
+    let (_, ext) = format_and_ext(k);
     let name = bodies(inputs).first().cloned().unwrap_or_else(|| app.session.doc.name.clone());
     let p = &mut app.preferences;
-    p.save_mesh_format = format.into();
+    if let Some(f) = FORMATS.get(k.format) {
+        p.save_mesh_format = f.1.into();
+    }
+    p.save_mesh_slicer_compat = if bambu(k) { "bambu".into() } else { String::new() };
+    if let Some(f) = BAMBU_FORMATS.get(k.bambu_format) {
+        p.save_mesh_bambu_format = f.1.into();
+    }
+    p.save_mesh_max_colors = k.max_colors.clamp(1, MAX_COLORS);
+    p.save_mesh_face_colors = k.face_colors;
+    p.save_mesh_visible_only = k.visible_only;
+    p.bambu_printer = k.printer.trim().to_string();
+    p.bambu_process = k.process.trim().to_string();
+    p.bambu_filament = k.filament.trim().to_string();
     p.save_mesh_send = k.send;
     if !k.slicer.is_empty() {
         p.save_mesh_slicer = k.slicer.clone();
@@ -343,5 +456,65 @@ fn save(app: &mut SolveApp, mut params: Value, path: &str) {
             Some(s) => app.set_status(crate::i18n::format("ui.sent_to_slicer", &[("slicer", s)]), false),
             None => app.set_status(crate::i18n::format("ui.saved_to", &[("path", path)]), false),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn picked(names: &[&str]) -> Vec<SelInput> {
+        let mut input = SelInput::new("Bodies", BODIES, true);
+        input.items = names.iter().map(|n| Sel::Body { name: (*n).to_string() }).collect();
+        vec![input]
+    }
+
+    fn dialog(compat: usize, bambu_format: usize) -> SaveMesh {
+        let presets = solidcraft_engine::io::BambuPresets::default();
+        SaveMesh {
+            format: 1,
+            compat,
+            bambu_format,
+            max_colors: 6,
+            face_colors: false,
+            visible_only: true,
+            printer: presets.printer,
+            process: presets.process,
+            filament: " Bambu PETG Basic @BBL P2S 0.4 nozzle ".into(),
+            send: false,
+            slicer: String::new(),
+            stale: false,
+        }
+    }
+
+    /// With no slicer compatibility the dialog asks for exactly what it always did.
+    #[test]
+    fn a_plain_save_asks_for_the_format_and_bodies_only() {
+        let (id, p) = commands(&dialog(0, 0), &picked(&["A"])).unwrap().remove(0);
+        assert_eq!(id, "file.save_mesh");
+        assert_eq!(p, json!({"format": "3mf", "bodies": ["A"]}));
+        assert_eq!(format_and_ext(&dialog(0, 1)), ("3mf", "3mf"));
+    }
+
+    /// Bambu Studio: the project or OBJ format and the slicer options; the presets go with the
+    /// project only, and an empty preset is refused.
+    #[test]
+    fn a_bambu_save_asks_for_the_slicer_options() {
+        let (_, p) = commands(&dialog(1, 0), &picked(&["A", "B"])).unwrap().remove(0);
+        assert_eq!(
+            p,
+            json!({"format": "3mf", "bodies": ["A", "B"], "slicer_compat": "bambu", "max_colors": 6, "face_colors": false, "visible_only": true,
+                "printer": "Bambu Lab P2S 0.4 nozzle", "process": "0.20mm Standard @BBL P2S", "filament": "Bambu PETG Basic @BBL P2S 0.4 nozzle"})
+        );
+        let (_, p) = commands(&dialog(1, 1), &picked(&["A"])).unwrap().remove(0);
+        assert_eq!(
+            p,
+            json!({"format": "obj", "bodies": ["A"], "slicer_compat": "bambu", "max_colors": 6, "face_colors": false, "visible_only": true})
+        );
+        assert_eq!(format_and_ext(&dialog(1, 1)), ("obj", "obj"));
+        let mut empty = dialog(1, 0);
+        empty.printer = "  ".into();
+        assert!(commands(&empty, &picked(&["A"])).is_err());
+        assert!(commands(&dialog(1, 0), &picked(&[])).is_err());
     }
 }
