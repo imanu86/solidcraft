@@ -90,7 +90,11 @@ fn bambu_project_has_filaments_extruders_and_painted_faces() {
     assert_eq!(r["bodies"], 3);
     assert_eq!(
         r["filaments"],
-        json!([{"color": "#FF0000", "triangles": 24}, {"color": "#0040FF", "triangles": 10}, {"color": "#FFFF00", "triangles": 2}])
+        json!([
+            {"color": "#FF0000", "triangles": 24, "area_mm2": 4800.0, "merged": 1, "sources": ["#FF0000"]},
+            {"color": "#0040FF", "triangles": 10, "area_mm2": 2000.0, "merged": 1, "sources": ["#0040FF"]},
+            {"color": "#FFFF00", "triangles": 2, "area_mm2": 400.0, "merged": 1, "sources": ["#FFFF00"]}
+        ])
     );
     assert_eq!(r["painted_triangles"], 2);
     assert_eq!(r["extruders"], json!([1, 2, 1]));
@@ -100,10 +104,19 @@ fn bambu_project_has_filaments_extruders_and_painted_faces() {
     assert_eq!(all["bodies"], 4);
     assert_eq!(all["painted_triangles"], 0);
     assert_eq!(all["filaments"].as_array().map(Vec::len), Some(3), "red, blue, grey: the yellow face is its body's blue");
+    // As one assembly: one object (named after the file) with a part per body, each on its
+    // own filament; the bodies read back as one mesh holding all of them.
+    let asm = run(&mut s, "file.export", json!({"path": path, "slicer_compat": "bambu", "visible_only": true, "assembly": true}));
+    assert_eq!(asm["extruders"], json!([1, 2, 1]));
+    assert_eq!(asm["painted_triangles"], 2);
+    assert_eq!(names(&path), ["cubes"]);
     // One colour: every body on filament 1.
     let one = run(&mut s, "file.export", json!({"path": path, "slicer_compat": "bambu", "max_colors": 1}));
     assert_eq!(one["filaments"].as_array().map(Vec::len), Some(1));
     assert_eq!(one["merged_colors"], 3);
+    assert_eq!(one["filaments"][0]["merged"], 4);
+    // Up to 32 filaments.
+    assert!(s.execute("file.export", &json!({"path": path, "slicer_compat": "bambu", "max_colors": 32})).is_ok());
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -125,6 +138,11 @@ fn obj_with_mtl_writes_both_files() {
     let r = run(&mut s, "file.save_mesh", json!({"path": saved, "slicer_compat": "bambu", "max_colors": 2, "bodies": ["Red1", "Blue"]}));
     assert_eq!(r["materials"].as_array().map(Vec::len), Some(2));
     assert!(d.join("saved.mtl").exists());
+    // As one assembly: one object named after the file, a group per body.
+    run(&mut s, "file.export", json!({"path": path, "mtl": true, "visible_only": true, "assembly": true}));
+    let obj = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(obj.lines().filter(|l| l.starts_with("o ")).collect::<Vec<_>>(), ["o cubes"]);
+    assert_eq!(obj.lines().filter(|l| l.starts_with("g ")).count(), 3);
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -137,7 +155,7 @@ fn slicer_options_are_checked() {
     let cases = [
         json!({"path": p3, "slicer_compat": "cura"}),
         json!({"path": p3, "slicer_compat": "bambu", "max_colors": 0}),
-        json!({"path": p3, "slicer_compat": "bambu", "max_colors": 17}),
+        json!({"path": p3, "slicer_compat": "bambu", "max_colors": 33}),
         json!({"path": p3, "slicer_compat": "bambu", "max_colors": 2.5}),
         json!({"path": p3, "slicer_compat": "bambu", "face_colors": "yes"}),
         json!({"path": p3, "slicer_compat": "bambu", "printer": ""}),
@@ -145,6 +163,8 @@ fn slicer_options_are_checked() {
         json!({"path": p3, "max_colors": 4}),
         json!({"path": p3, "printer": "Bambu Lab X1 Carbon 0.4 nozzle"}),
         json!({"path": p3, "mtl": true}),
+        json!({"path": p3, "assembly": true}),
+        json!({"path": p3, "slicer_compat": "bambu", "assembly": 1}),
         json!({"path": p3, "format": "3mf-tagged", "slicer_compat": "bambu"}),
         json!({"path": at(&d, "x.stl"), "slicer_compat": "bambu"}),
         json!({"path": at(&d, "x.step"), "slicer_compat": "bambu"}),

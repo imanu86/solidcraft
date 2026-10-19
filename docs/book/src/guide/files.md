@@ -54,10 +54,12 @@ them. The format is specified in [`docs/formats/3mf-face-tags.md`](https://githu
 then saved exactly as before. **Bambu Studio** makes the file for Bambu Studio: a project 3MF with
 one filament per colour, each body on the filament of its colour and the faces with colours of
 their own painted with theirs, or an OBJ with its colours in an MTL file next to it. Further rows
-set the most colours (1 to 16: the colours covering the most triangles keep a filament of their
-own, the others take the nearest), whether faces keep their own colours, whether only the visible
-bodies go (on at first), and the Bambu Studio printer, process and filament presets the project
-names. Scripts and agents use `file.export` or `file.save_mesh` with `slicer_compat: "bambu"`
+set the most colours (1 to 32, 16 at first: over it the colours closest to the eye share a
+filament, so near greys merge before a small distinct colour), whether faces keep their own
+colours, whether only the visible bodies go (on at first), **Whole model as one object** (one
+object with a part per body, each in its place: Bambu Studio sets separate objects down on the
+plate one by one, which breaks up an assembly), and the Bambu Studio printer, process and filament
+presets the project names. Scripts and agents use `file.export` or `file.save_mesh` with `slicer_compat: "bambu"`
 (and `mtl: true` writes the MTL file for any OBJ export; `visible_only: true` leaves hidden bodies
 out of any export). See [`docs/formats/slicer-export.md`](https://github.com/bherbruck/solidcraft/blob/main/docs/formats/slicer-export.md).
 

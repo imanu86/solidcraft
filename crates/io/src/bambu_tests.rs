@@ -3,7 +3,7 @@ use std::io::Read as _;
 use solidcraft_geom::Vec3;
 
 use super::*;
-use crate::slicer::{MAX_BAMBU_FILAMENTS, SlicerTarget, rgba};
+use crate::slicer::{DEFAULT_BAMBU_FILAMENTS, MAX_BAMBU_FILAMENTS, SlicerTarget, hex, rgba};
 
 /// A cube of edge `s` with its lowest corner at `at` (12 triangles, outward).
 fn cube(name: &str, at: Vec3, s: f64, color: Option<[f32; 3]>) -> MeshObject {
@@ -50,20 +50,24 @@ fn extruders(settings: &str) -> Vec<String> {
 
 #[test]
 fn paint_codes_follow_the_filament() {
-    let codes: Vec<String> = (1..=16).map(|e| paint_code(e).unwrap()).collect();
+    let codes: Vec<String> = (1..=32).map(|e| paint_code(e).unwrap()).collect();
     assert_eq!(&codes[..5], ["4", "8", "0C", "1C", "2C"]);
-    assert_eq!(codes[15], "DC");
+    // Checked by slicing: 16 DC, 17 EC, 18 0FC, 19 1FC, 20 2FC, 24 6FC, 31 DFC, 32 EFC.
+    for (e, code) in [(16, "DC"), (17, "EC"), (18, "0FC"), (19, "1FC"), (20, "2FC"), (24, "6FC"), (31, "DFC"), (32, "EFC")] {
+        assert_eq!(codes[e - 1], code, "filament {e}");
+    }
     assert_eq!(paint_code(0), None);
-    assert_eq!(paint_code(19), None);
+    assert_eq!(paint_code(33), None);
 }
 
 /// Each colour a filament (in order of first use), each body on its colour's filament, the
 /// yellow face painted with its own filament, and the package Bambu Studio reads as a project.
 #[test]
 fn project_has_a_filament_per_colour_and_painted_faces() {
-    let out = write_bambu_3mf(&five(), &bambu(None, true), &[("Title", "Five <cubes>")]).unwrap();
-    assert_eq!(out.colors.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(), ["#FF0000", "#0040FF", "#00A000", "#FFFF00", "#B3B3B3"]);
-    assert_eq!(out.colors.iter().map(|c| c.1).collect::<Vec<_>>(), [24, 12, 10, 2, 12]);
+    let out = write_bambu_3mf(&five(), &bambu(None, true), "Five", &[("Title", "Five <cubes>")]).unwrap();
+    assert_eq!(out.colors.iter().map(|c| hex(c.color)).collect::<Vec<_>>(), ["#FF0000", "#0040FF", "#00A000", "#FFFF00", "#B3B3B3"]);
+    assert_eq!(out.colors.iter().map(|c| c.triangles).collect::<Vec<_>>(), [24, 12, 10, 2, 12]);
+    assert_eq!(out.colors.iter().map(|c| c.area.round()).collect::<Vec<_>>(), [4800.0, 2400.0, 2000.0, 400.0, 2400.0], "mm² of 20 mm cube faces");
     assert_eq!(out.extruders, [1, 2, 1, 3, 5]);
     assert_eq!((out.distinct_colors, out.merged_colors, out.painted_triangles), (5, 0, 2));
     assert!(out.mtl.is_none());
@@ -99,7 +103,7 @@ fn project_has_a_filament_per_colour_and_painted_faces() {
     for k in [1, 2, 3, 5] {
         assert!(!part(&out.bytes, &format!("3D/Objects/object_{k}.model")).contains("paint_color"));
     }
-    assert_eq!(out.bytes, write_bambu_3mf(&five(), &bambu(None, true), &[("Title", "Five <cubes>")]).unwrap().bytes, "reproducible bytes");
+    assert_eq!(out.bytes, write_bambu_3mf(&five(), &bambu(None, true), "Five", &[("Title", "Five <cubes>")]).unwrap().bytes, "reproducible bytes");
 }
 
 /// The package is a 3MF any reader opens (SolidCraft's own here): the bodies come back whole,
@@ -107,7 +111,7 @@ fn project_has_a_filament_per_colour_and_painted_faces() {
 #[test]
 #[ignore = "reads the project's model parts: needs the 3MF production-extension reader (#2089), which 0.16.2 lacks"]
 fn project_reads_back_as_the_same_bodies_on_the_plate() {
-    let out = write_bambu_3mf(&five(), &bambu(None, true), &[]).unwrap();
+    let out = write_bambu_3mf(&five(), &bambu(None, true), "Five", &[]).unwrap();
     let (objs, warnings) = crate::read_3mf(&out.bytes).unwrap();
     assert!(warnings.is_empty(), "{warnings:?}");
     assert_eq!(objs.len(), 5);
@@ -129,25 +133,30 @@ fn project_reads_back_as_the_same_bodies_on_the_plate() {
     assert!((red - low - 5.0).abs() < 1e-4, "{red} {low}");
 }
 
-/// Over the limit the most used colours keep their filaments and the rest join the nearest;
+/// Over the limit the closest colours share filaments (the limit is 16 unless asked, 32 at most);
 /// without face colours nothing is painted.
 #[test]
 fn colours_over_the_limit_join_the_nearest_and_face_colours_can_be_off() {
     let objs: Vec<MeshObject> =
         (0..20).map(|i| cube(&format!("C{i}"), Vec3::new(30.0 * i as f64, 0.0, 0.0), 10.0, Some([i as f32 / 19.0, 0.2, 0.4]))).collect();
-    let out = write_bambu_3mf(&objs, &bambu(None, true), &[]).unwrap();
-    assert_eq!(out.colors.len(), MAX_BAMBU_FILAMENTS);
+    let out = write_bambu_3mf(&objs, &bambu(None, true), "Five", &[]).unwrap();
+    assert_eq!(out.colors.len(), DEFAULT_BAMBU_FILAMENTS);
     assert_eq!((out.distinct_colors, out.merged_colors), (20, 4));
+    assert_eq!(out.colors.iter().map(|c| c.sources.len()).sum::<usize>(), 20);
     assert!(out.extruders.iter().all(|e| (1..=16).contains(e)));
     let project: serde_json::Value = serde_json::from_str(&part(&out.bytes, "Metadata/project_settings.config")).unwrap();
     assert_eq!(project["filament_colour"].as_array().map(Vec::len), Some(16));
-    // A limit asked above 16 is still 16; one colour puts everything on filament 1.
-    assert_eq!(write_bambu_3mf(&objs, &bambu(Some(99), true), &[]).unwrap().colors.len(), 16);
-    let one = write_bambu_3mf(&five(), &bambu(Some(1), true), &[]).unwrap();
+    // Up to 32 filaments; a limit asked above that is 32; one colour puts everything on filament 1.
+    assert_eq!(write_bambu_3mf(&objs, &bambu(Some(20), true), "Five", &[]).unwrap().colors.len(), 20);
+    let many: Vec<MeshObject> = (0..40)
+        .map(|i| cube(&format!("C{i}"), Vec3::new(30.0 * i as f64, 0.0, 0.0), 10.0, Some([i as f32 / 39.0, 0.5, 1.0 - i as f32 / 39.0])))
+        .collect();
+    assert_eq!(write_bambu_3mf(&many, &bambu(Some(99), true), "Five", &[]).unwrap().colors.len(), MAX_BAMBU_FILAMENTS);
+    let one = write_bambu_3mf(&five(), &bambu(Some(1), true), "Five", &[]).unwrap();
     assert_eq!(one.extruders, [1; 5]);
     assert_eq!((one.colors.len(), one.painted_triangles), (1, 0));
-    assert_eq!(one.colors[0].0, "#FF0000", "the most used colour");
-    let flat = write_bambu_3mf(&five(), &bambu(None, false), &[]).unwrap();
+    assert_eq!(one.colors[0].sources.len(), 5, "every colour in the one filament");
+    let flat = write_bambu_3mf(&five(), &bambu(None, false), "Five", &[]).unwrap();
     assert_eq!(flat.painted_triangles, 0);
     assert_eq!(flat.colors.len(), 4, "the yellow face takes its body's colour");
     assert!(!part(&flat.bytes, "3D/Objects/object_4.model").contains("paint_color"));
@@ -163,7 +172,7 @@ fn presets_name_the_filament_type_and_nozzle() {
     assert_eq!(nozzle("Bambu Lab X1 NaN nozzle"), "0.4");
     let presets = BambuPresets { printer: "P \"x\"".into(), process: "Q".into(), filament: "Bambu PETG HF @BBL A1".into() };
     let options = SlicerOptions { presets, ..bambu(None, true) };
-    let out = write_bambu_3mf(&five(), &options, &[]).unwrap();
+    let out = write_bambu_3mf(&five(), &options, "Five", &[]).unwrap();
     let project: serde_json::Value = serde_json::from_str(&part(&out.bytes, "Metadata/project_settings.config")).unwrap();
     assert_eq!(project["printer_settings_id"], "P \"x\"");
     assert_eq!(project["filament_type"][4], "PETG");
@@ -172,18 +181,86 @@ fn presets_name_the_filament_type_and_nozzle() {
 
 #[test]
 fn hostile_input_is_an_error_not_a_panic() {
-    assert!(write_bambu_3mf(&[], &bambu(None, true), &[]).is_err());
+    assert!(write_bambu_3mf(&[], &bambu(None, true), "Five", &[]).is_err());
     let mut nan = cube("NaN", Vec3::ZERO, 1.0, Some([f32::NAN, 0.0, 0.0]));
     nan.positions[0] = Vec3::new(f64::NAN, 0.0, 0.0);
     let empty = MeshObject { name: "Empty".into(), ..Default::default() };
     for objs in [vec![nan.clone()], vec![empty.clone()], vec![empty, nan]] {
-        let r = std::panic::catch_unwind(|| write_bambu_3mf(&objs, &bambu(None, true), &[]).map(|o| o.bytes.len()));
+        let r = std::panic::catch_unwind(|| write_bambu_3mf(&objs, &bambu(None, true), "Five", &[]).map(|o| o.bytes.len()));
         assert!(r.is_ok());
     }
     // Look entries that point past the list are the body's own colour.
     let mut odd = cube("Odd", Vec3::ZERO, 1.0, Some(RED));
     odd.tri_looks = vec![7; 12];
-    let out = write_bambu_3mf(&[odd], &bambu(None, true), &[]).unwrap();
+    let out = write_bambu_3mf(&[odd], &bambu(None, true), "Five", &[]).unwrap();
     assert_eq!((out.colors.len(), out.painted_triangles), (1, 0));
     assert_eq!(rgba(RED, 0.0), [255, 0, 0, 255]);
+}
+
+/// An assembly: one object with a part per body, each part at its place and on its filament,
+/// the painted face kept; it reads back as the same bodies in the same places, as one mesh.
+#[test]
+fn assembly_is_one_object_with_a_part_per_body() {
+    let options = SlicerOptions { assembly: true, ..bambu(None, true) };
+    let out = write_bambu_3mf(&five(), &options, "Five cubes", &[]).unwrap();
+    assert_eq!(out.extruders, [1, 2, 1, 3, 5]);
+    assert_eq!(out.painted_triangles, 2);
+    let model = part(&out.bytes, "3D/3dmodel.model");
+    assert_eq!(model.matches("<object ").count(), 1, "{model}");
+    assert!(model.contains("name=\"Five cubes\""));
+    assert_eq!(model.matches("<component p:path=\"/3D/Objects/object_1.model\"").count(), 5);
+    assert_eq!(model.matches("<item ").count(), 1);
+    let settings = part(&out.bytes, "Metadata/model_settings.config");
+    assert_eq!(settings.matches("<object ").count(), 1);
+    assert_eq!(settings.matches("<part id=").count(), 5);
+    assert_eq!(extruders(&settings), ["1", "2", "1", "3", "5"], "a filament per part");
+    assert!(settings.contains("<metadata key=\"name\" value=\"Green &amp; &lt;top&gt;\"/>"));
+    let meshes = part(&out.bytes, "3D/Objects/object_1.model");
+    assert_eq!(meshes.matches("<mesh>").count(), 5);
+    assert_eq!(meshes.matches("paint_color=\"1C\"").count(), 2);
+    let mut zip = zip::ZipArchive::new(Cursor::new(out.bytes.as_slice())).unwrap();
+    assert!(zip.by_name("3D/Objects/object_2.model").is_err(), "all parts in one model part");
+    // The parts' places: each component's translation is its body's centre, shifted as one.
+    let centres: Vec<[f64; 3]> = model
+        .split("transform=\"1 0 0 0 1 0 0 0 1 ")
+        .skip(1)
+        .take(5)
+        .map(|t| {
+            let v: Vec<f64> = t.split('"').next().unwrap().split(' ').map(|x| x.parse().unwrap()).collect();
+            [v[0], v[1], v[2]]
+        })
+        .collect();
+    let want = [[10.0, 10.0, 10.0], [40.0, 10.0, 10.0], [70.0, 10.0, 10.0], [100.0, 10.0, 10.0], [130.0, 10.0, 5.0]];
+    let d = [centres[0][0] - want[0][0], centres[0][1] - want[0][1], centres[0][2] - want[0][2]];
+    for (c, w) in centres.iter().zip(want) {
+        for i in 0..3 {
+            assert!((c[i] - w[i] - d[i]).abs() < 1e-4, "{centres:?}");
+        }
+    }
+    let (objs, warnings) = crate::read_3mf(&out.bytes).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(objs.len(), 1);
+    assert_eq!(objs[0].name, "Five cubes");
+    assert_eq!(objs[0].triangles.len(), 60);
+}
+
+/// Faces in up to 32 colours on one body: every face colour its own filament, painted with
+/// codes up to `EFC`.
+#[test]
+fn faces_paint_up_to_filament_32() {
+    let mut body = cube("Many", Vec3::ZERO, 10.0, Some([0.5, 0.5, 0.5]));
+    let mut boxes = vec![body.clone()];
+    // 31 more bodies, each a colour of its own, so that the faces of the first can use them all.
+    for i in 1..32 {
+        boxes.push(cube(&format!("B{i}"), Vec3::new(20.0 * i as f64, 0.0, 0.0), 10.0, Some([i as f32 / 31.0, 1.0 - i as f32 / 31.0, 0.3])));
+    }
+    body.looks = vec![([1.0 / 31.0 * 31.0, 0.0, 0.3], 0.0)];
+    body.tri_looks = vec![1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    boxes[0] = body;
+    let out = write_bambu_3mf(&boxes, &bambu(Some(32), true), "Many", &[]).unwrap();
+    assert_eq!(out.colors.len(), 32);
+    let first = part(&out.bytes, "3D/Objects/object_1.model");
+    let code = first.split("paint_color=\"").nth(1).and_then(|r| r.split('"').next()).unwrap().to_string();
+    let filament = out.colors.iter().position(|c| c.color == rgba([1.0, 0.0, 0.3], 0.0)).unwrap() + 1;
+    assert_eq!(Some(code), paint_code(filament), "the painted face's filament {filament}");
 }
