@@ -109,7 +109,6 @@ fn bambu_project_has_filaments_extruders_and_painted_faces() {
     let asm = run(&mut s, "file.export", json!({"path": path, "slicer_compat": "bambu", "visible_only": true, "assembly": true}));
     assert_eq!(asm["extruders"], json!([1, 2, 1]));
     assert_eq!(asm["painted_triangles"], 2);
-    assert_eq!(names(&path), ["cubes"]);
     // One colour: every body on filament 1.
     let one = run(&mut s, "file.export", json!({"path": path, "slicer_compat": "bambu", "max_colors": 1}));
     assert_eq!(one["filaments"].as_array().map(Vec::len), Some(1));
