@@ -28,6 +28,8 @@ mod boundary;
 mod boundary_network;
 mod bridge;
 mod build;
+#[cfg(test)]
+mod chamfer_sides_curved_tests;
 mod clearance;
 mod coaxial_overlap;
 mod continuity;
@@ -113,6 +115,7 @@ mod record;
 mod seam_faces;
 mod sew;
 mod smooth_edges;
+mod sphere_lens;
 mod spline_conv;
 mod splitface;
 mod step;
