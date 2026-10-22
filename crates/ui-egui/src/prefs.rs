@@ -503,6 +503,19 @@ preference_settings! {
     save_mesh_send: bool = false;
     save_mesh_slicer: String = String::new();
     custom_slicers: Vec<String> = Vec::new();
+    /// Save as mesh made for a slicer (docs/formats/slicer-export.md): `bambu`, or empty for none;
+    /// Bambu Studio's format (`3mf` or `obj`), the most colours, whether faces keep their own
+    /// colours, whether only visible bodies go, whether they go as one assembly, and the presets a
+    /// Bambu Studio project names.
+    save_mesh_slicer_compat: String = String::new();
+    save_mesh_bambu_format: String = "3mf".into();
+    save_mesh_max_colors: u32 = solidcraft_engine::io::slicer::DEFAULT_BAMBU_FILAMENTS as u32;
+    save_mesh_face_colors: bool = true;
+    save_mesh_visible_only: bool = true;
+    save_mesh_assembly: bool = false;
+    bambu_printer: String = solidcraft_engine::io::BambuPresets::default().printer;
+    bambu_process: String = solidcraft_engine::io::BambuPresets::default().process;
+    bambu_filament: String = solidcraft_engine::io::BambuPresets::default().filament;
     /// AI features (docs/agent-chat.md): the master switch. Off: no AI button, shortcut, menu
     /// entry or panel, and nothing is looked for or started.
     ai_features: bool = true, PAGE_AI;
