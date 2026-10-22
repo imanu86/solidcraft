@@ -242,6 +242,27 @@ mod tests {
     }
 
     #[test]
+    fn browser_find_opens_the_rows_that_hold_the_body() {
+        let mut h = Harness::new();
+        h.app.run("solid.box", json!({"length":10,"width":10,"height":10,"body_name":"Plate"})).unwrap();
+        // The document row closed: the body row is nowhere on screen, so the reveal has to open
+        // the rows above it before it can be scrolled to (#3883).
+        h.app.tree.collapsed.insert("c0".into());
+        h.frames(2);
+        let labels: Vec<_> = drawn_rows().into_iter().map(|(label, ..)| label).collect();
+        assert!(!labels.iter().any(|label| label == "Plate"), "the closed tree hides the body row: {labels:?}");
+
+        h.app.session.selection = vec![Sel::Body { name: "Plate".into() }];
+        let item = crate::context_menu::items(&h.app, &Target::Viewport).into_iter().find(|item| item.id == "ui.findBrowser").unwrap();
+        crate::context_menu::run_item(&mut h.app, &item, pos2(0.0, 0.0));
+        h.frames(2);
+        assert!(!h.app.tree.collapsed.contains("c0"), "the document row is open");
+        assert!(!h.app.tree.collapsed.contains("c0/bodies"), "its Bodies folder is open");
+        let labels: Vec<_> = drawn_rows().into_iter().map(|(label, ..)| label).collect();
+        assert!(labels.iter().any(|label| label == "Plate"), "the body row is drawn to scroll to: {labels:?}");
+    }
+
+    #[test]
     fn browser_feature_imported_source_ids_never_reveal_an_unrelated_native_feature() {
         struct Source(std::path::PathBuf);
         impl Drop for Source {

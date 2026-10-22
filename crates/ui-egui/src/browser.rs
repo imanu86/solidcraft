@@ -24,6 +24,33 @@ pub(crate) fn reveal_feature(app: &mut SolveApp, id: u64, body: Option<&str>) {
     features::reveal(app, id, body);
 }
 
+/// Show a body in the browser: open the rows that hold it — the document or the placement it is
+/// in, its Bodies folder and any group around it — and mark it to be scrolled to. The folder row
+/// that finishes a reveal is only drawn once its ancestors are open, so Find in Browser has to
+/// open them here; with the tree closed, the body row never reaches the screen otherwise.
+pub(crate) fn reveal_body(app: &mut SolveApp, body: &str) {
+    app.tree.reveal = Some(body.to_string());
+    let state = app.session.model.state();
+    let source = match app.session.world_state().body(body) {
+        Some(selected) => selected.definition_name().to_string(),
+        None => return,
+    };
+    let Some((component, path, _)) =
+        app.session.doc.placements().into_iter().find(|(owner, path, _)| app.session.doc.world_body_name(&state, &source, *owner, path) == body)
+    else {
+        return;
+    };
+    app.tree.collapsed.remove("c0");
+    for depth in 1..=path.len() {
+        app.tree.collapsed.remove(&occurrence_key(&path[..depth]));
+    }
+    let scope = if path.is_empty() { format!("c{component}") } else { occurrence_key(&path) };
+    app.tree.collapsed.remove(&format!("{scope}/bodies"));
+    for g in app.session.doc.browser_groups.iter().filter(|g| g.folder == "bodies" && g.items.iter().any(|i| i == body)) {
+        app.tree.collapsed.remove(&format!("{scope}/g{}", g.id));
+    }
+}
+
 #[cfg(test)]
 #[path = "browser_model_tests.rs"]
 mod model_tests;

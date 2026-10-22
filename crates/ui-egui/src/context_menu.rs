@@ -1088,7 +1088,9 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
                 app.ui.show_browser = true;
                 app.preferences.timeline_left_browser_collapsed = false;
                 app.tree.reveal_feature = None;
-                app.tree.reveal = Some(b.to_string());
+                // Opens the document, placement and folder rows above the body as well, so a
+                // closed tree shows where it is (#3883).
+                crate::browser::reveal_body(app, b);
                 let _ = app.run("select.set", json!({"items": [{"type": "body", "name": b}]}));
             }
         }
