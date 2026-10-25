@@ -181,7 +181,7 @@ fn paint_icon(ui: &egui::Ui, rect: egui::Rect, tex: Option<egui::TextureId>, nam
         }
         None => {
             let t = Tokens::get();
-            ui.painter().rect_filled(rect, 3.0, t.chip);
+            ui.painter().rect_filled(rect, t.radius_sm.saturating_sub(1), t.chip);
             let letter = name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
             ui.painter().text(
                 rect.center(),
@@ -250,22 +250,21 @@ fn bambu_project(k: &SaveMesh) -> bool {
 fn bambu_rows(ui: &mut egui::Ui, k: &mut SaveMesh) {
     choice_row(ui, "Format", "sm_bambu_format", &mut k.bambu_format, &BAMBU_FORMATS.map(|f| f.0));
     form_row(ui, "ui.max_colors", |ui| {
-        let r = ui.add(egui::DragValue::new(&mut k.max_colors).range(1..=MAX_COLORS).speed(0.1));
+        let r = crate::ui_kit::number_field(ui, &mut k.max_colors, 1..=MAX_COLORS, 0.1, "");
         crate::scenario::publish_handle("dialog:max_colors", r.rect.center());
         r.on_hover_text(crate::i18n::tr("ui.max_colors_tip"));
     });
     form_row(ui, "ui.face_colors", |ui| crate::dialogs::check(ui, &mut k.face_colors));
     form_row(ui, "ui.visible_only", |ui| crate::dialogs::check(ui, &mut k.visible_only));
     form_row(ui, "ui.assembly", |ui| {
-        let r = ui.checkbox(&mut k.assembly, "");
+        let r = crate::ui_kit::checkbox(ui, "", &mut k.assembly);
         crate::scenario::publish_handle("dialog:assembly", r.rect.center());
         r.on_hover_text(crate::i18n::tr("ui.assembly_tip"));
     });
     if bambu_project(k) {
         for (label, value) in [("ui.bambu_printer", &mut k.printer), ("ui.bambu_process", &mut k.process), ("ui.bambu_filament", &mut k.filament)] {
             form_row(ui, label, |ui| {
-                let r = ui.add(egui::TextEdit::singleline(value).desired_width(ui.available_width()));
-                crate::scenario::publish_handle(&format!("dialog:{label}"), r.rect.center());
+                crate::ui_kit::text_field(ui, value, "");
             });
         }
     }
@@ -298,7 +297,7 @@ fn slicer_combo(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut SaveMesh) {
             let selected = e.key == k.slicer;
             if resp.hovered() || selected {
                 let fill = if resp.hovered() { Tokens::get().hover } else { Tokens::get().selected_bg };
-                ui.painter().rect_filled(rect, 2.0, fill);
+                ui.painter().rect_filled(rect, Tokens::get().radius_sm / 2, fill);
             }
             paint_icon(ui, egui::Rect::from_min_size(rect.left_center() + vec2(3.0, -ICON / 2.0), vec2(ICON, ICON)), tex, &e.slicer.name);
             ui.painter().text(
@@ -326,7 +325,7 @@ fn slicer_combo(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut SaveMesh) {
         }
         let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
         if resp.hovered() {
-            ui.painter().rect_filled(rect, 2.0, Tokens::get().hover);
+            ui.painter().rect_filled(rect, Tokens::get().radius_sm / 2, Tokens::get().hover);
         }
         ui.painter().text(
             rect.left_center() + vec2(ICON + 9.0, 0.0),
@@ -491,6 +490,7 @@ fn save(app: &mut SolveApp, mut params: Value, path: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solidcraft_engine::Sel;
 
     fn picked(names: &[&str]) -> Vec<SelInput> {
         let mut input = SelInput::new("Bodies", BODIES, true);

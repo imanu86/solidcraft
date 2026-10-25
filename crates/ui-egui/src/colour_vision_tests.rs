@@ -379,6 +379,44 @@ const SHADED: [&str; 2] = ["analysis.draft", "analysis.access"];
 /// Tokens no colour vision mode needs to keep apart, and why. A new token fails
 /// `every_token_is_measured_or_carries_no_meaning` until it is in a group above or here.
 const NO_MEANING: &[(&str, &str)] = &[
+    ("borders.primary", "structural chrome: hierarchy uses width, pattern and placement, not hue"),
+    ("borders.secondary", "structural chrome: hierarchy uses width, pattern and placement, not hue"),
+    ("borders.secondary_dotted", "structural chrome: hierarchy uses width, pattern and placement, not hue"),
+    ("borders.tertiary", "structural chrome: hierarchy uses width, pattern and placement, not hue"),
+    ("borders.container", "structural chrome: hierarchy uses width, pattern and placement, not hue"),
+    ("borders.control", "structural chrome: hierarchy uses width, pattern and placement, not hue"),
+    ("borders.primary_inset", "structural chrome: hierarchy uses width, pattern and placement, not hue"),
+    ("borders.bevel", "structural chrome: hierarchy uses width, pattern and placement, not hue"),
+    ("icon_palette", "optional SVG palette; actual roles and theme contrast are guarded in icon and theme tests"),
+    ("file_dim", "File view secondary text, WCAG guarded in theme tests"),
+    ("file_recovery_well", "decorative recovery icon ground"),
+    ("file_action_height", "layout dimension"),
+    ("file_back_height", "layout dimension"),
+    ("file_recovery_icon", "layout dimension"),
+    ("file_grid_gap", "layout dimension"),
+    ("file_nav_width", "layout dimension"),
+    ("file_nav_height", "layout dimension"),
+    ("file_tile_height", "layout dimension"),
+    ("file_tile_icon", "layout dimension"),
+    ("file_recent_height", "layout dimension"),
+    ("file_sample_image_height", "layout dimension"),
+    ("file_content_inset_x", "layout dimension"),
+    ("file_content_inset_y", "layout dimension"),
+    ("file_section_gap", "layout dimension"),
+    ("font_start_title", "layout dimension"),
+    ("file_background", "File view chrome; paired text contrast is guarded in theme tests"),
+    ("file_surface", "File view chrome; paired text contrast is guarded in theme tests"),
+    ("file_image_tint", "neutral image multiplication; model pixels retain their original colours"),
+    ("file_border", "File view chrome; paired text contrast is guarded in theme tests"),
+    ("file_rail", "File view chrome; paired text contrast is guarded in theme tests"),
+    ("file_rail_ink", "File view chrome; paired text contrast is guarded in theme tests"),
+    ("file_rail_hover", "File view chrome; paired text contrast is guarded in theme tests"),
+    ("file_primary", "File view chrome; paired text contrast is guarded in theme tests"),
+    ("file_primary_ink", "File view chrome; paired text contrast is guarded in theme tests"),
+    ("file_primary_border", "File view chrome; paired text contrast is guarded in theme tests"),
+    ("file_recovery", "File view chrome; paired text contrast is guarded in theme tests"),
+    ("file_recovery_ink", "File view chrome; paired text contrast is guarded in theme tests"),
+    ("file_recovery_border", "File view chrome; paired text contrast is guarded in theme tests"),
     ("space_2", "layout dimension"),
     ("space_3", "layout dimension"),
     ("space_4", "layout dimension"),
@@ -491,16 +529,15 @@ const NO_MEANING: &[(&str, &str)] = &[
     ("cube_border", "labelled"),
     ("cube_text", "labelled"),
     ("cube_hover", "hover highlight"),
-    // Not a colour, or the end of a mark that is measured elsewhere.
+    // Not a colour.
     ("analysis.hatch", "a flag: stripes on the failing faces"),
-    ("logo[3]", "the mark's white edge"),
     // Icon colours that are a shade of a measured one, or one mark alone.
     ("icons.highlight", "white ink on viewport markers and the agent pointer"),
     ("icons.agent", "the agent's pointer, alone"),
     ("icons.marker_halo", "a dark halo under a marker"),
 ];
 
-/// Every token field, by path (`sketch`, `analysis.draft`, `logo[3]`…): the arrays of distinct
+/// Every token field, by path (`sketch`, `analysis.draft`, `triad`…): the arrays of distinct
 /// meanings by element where only some elements are measured.
 fn token_fields(t: &Tokens) -> BTreeSet<String> {
     let text = format!("{t:#?}");
@@ -536,7 +573,7 @@ fn every_token_is_measured_or_carries_no_meaning() {
     for t in [Tokens::light(), Tokens::dark()] {
         let measured: BTreeSet<&str> =
             groups(&t).iter().flat_map(|g| g.members.iter().chain(&g.grounds).map(|(n, _)| field_of(n))).chain(SHADED).collect();
-        // An element of an array (`logo[3]`) is listed for the record; its array is measured.
+        // An element of an array (`triad[0]`) is listed for the record; its array is measured.
         let listed: BTreeSet<&str> = NO_MEANING.iter().map(|(n, _)| field_of(n)).collect();
         let fields = token_fields(&t);
         let unplaced: Vec<&String> = fields.iter().filter(|f| !measured.contains(f.as_str()) && !listed.contains(f.as_str())).collect();
@@ -842,22 +879,22 @@ fn the_shader_gets_the_modes_colours_and_its_stripes() {
 #[test]
 fn the_sections_messages_are_in_every_catalog() {
     let load = |text: &str| -> serde_json::Map<String, serde_json::Value> { serde_json::from_str(text).unwrap() };
-    let english = load(include_str!("../../../assets/locales/en.json"));
+    let english = load(include_str!(concat!(env!("OUT_DIR"), "/locales/en.json")));
     let ids: Vec<&str> = ColorVision::ALL
         .into_iter()
         .flat_map(|m| [m.label_id(), m.help_id()])
-        .chain(crate::prefs::COLOUR_VISION_SAMPLE)
+        .chain(crate::ui_kit::COLOUR_VISION_SAMPLE)
         .chain(["ui.colour_vision", "ui.colour_vision_mode", "ui.colour_vision_sample", "ui.colour_vision_note"])
         .collect();
     for (lang, text) in [
-        ("cs", include_str!("../../../assets/locales/cs.json")),
-        ("da", include_str!("../../../assets/locales/da.json")),
-        ("de", include_str!("../../../assets/locales/de.json")),
-        ("ja", include_str!("../../../assets/locales/ja.json")),
-        ("ko", include_str!("../../../assets/locales/ko.json")),
-        ("pl", include_str!("../../../assets/locales/pl.json")),
-        ("ru", include_str!("../../../assets/locales/ru.json")),
-        ("zh", include_str!("../../../assets/locales/zh.json")),
+        ("cs", include_str!(concat!(env!("OUT_DIR"), "/locales/cs.json"))),
+        ("da", include_str!(concat!(env!("OUT_DIR"), "/locales/da.json"))),
+        ("de", include_str!(concat!(env!("OUT_DIR"), "/locales/de.json"))),
+        ("ja", include_str!(concat!(env!("OUT_DIR"), "/locales/ja.json"))),
+        ("ko", include_str!(concat!(env!("OUT_DIR"), "/locales/ko.json"))),
+        ("pl", include_str!(concat!(env!("OUT_DIR"), "/locales/pl.json"))),
+        ("ru", include_str!(concat!(env!("OUT_DIR"), "/locales/ru.json"))),
+        ("zh", include_str!(concat!(env!("OUT_DIR"), "/locales/zh.json"))),
     ] {
         let catalog = load(text);
         for id in &ids {
@@ -984,22 +1021,22 @@ fn random_values_never_panic_and_only_the_four_ids_are_taken() {
 }
 
 #[test]
-fn cancel_puts_the_mode_back_ok_keeps_it_and_restore_defaults_resets_graphics_only() {
+fn cancel_puts_the_mode_back_ok_keeps_it_and_restore_defaults_resets_interface_only() {
     let mut app = app();
     let control = |app: &mut crate::SolveApp, p: serde_json::Value| crate::prefs::control(app, &p).unwrap();
-    control(&mut app, json!({"open": "Graphics"}));
+    control(&mut app, json!({"open": "Interface"}));
     control(&mut app, json!({"color_vision": "protan"}));
     assert_eq!(app.preferences.color_vision, ColorVision::Protan);
     control(&mut app, json!({"button": "cancel"}));
     assert_eq!(app.preferences.color_vision, ColorVision::Off);
-    control(&mut app, json!({"open": "Graphics"}));
+    control(&mut app, json!({"open": "Interface"}));
     control(&mut app, json!({"color_vision": "tritan", "button": "ok"}));
     assert_eq!(app.preferences.color_vision, ColorVision::Tritan);
     // Restore Defaults on another page leaves it.
     control(&mut app, json!({"open": "General"}));
     control(&mut app, json!({"button": "defaults"}));
     assert_eq!(app.preferences.color_vision, ColorVision::Tritan);
-    control(&mut app, json!({"open": "Graphics"}));
+    control(&mut app, json!({"open": "Interface"}));
     control(&mut app, json!({"button": "defaults"}));
     assert_eq!(app.preferences.color_vision, ColorVision::Off);
     control(&mut app, json!({"button": "ok"}));

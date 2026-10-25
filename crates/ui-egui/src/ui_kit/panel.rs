@@ -59,7 +59,7 @@ fn header_impl(ui: &mut Ui, icon: &str, title: &str, collapsed: Option<&mut bool
     let title_response = ui.interact(title_rect, ui.make_persistent_id("title_text"), egui::Sense::hover());
     title_response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), title));
     scenario::publish_rect("dialog:header", rect);
-    ui.painter().hline(rect.x_range(), rect.bottom(), egui::Stroke::new(1.0, t.dialog_rule));
+    t.secondary_hline(ui.painter(), rect.x_range(), rect.bottom(), t.dialog_rule);
 }
 
 /// A bounded docked or floating card. Uses form_card_width and the caller's tokenised frame.
@@ -72,6 +72,7 @@ pub(crate) struct Panel<'a> {
     side: crate::frame::Side,
     frame: egui::Frame,
     width: f32,
+    body_rows: Option<f32>,
     ok: &'a str,
     cancel: &'a str,
     reset_scroll: bool,
@@ -100,6 +101,20 @@ pub(crate) enum Part {
 }
 
 impl<'a> Panel<'a> {
+    /// Pinned inline actions inside an existing feature/card surface. This is not
+    /// a second window or painted card: the parent owns the chrome. Tokens:
+    /// control_height, space_24/8; bounded row count preserves finite geometry.
+    pub(crate) fn pinned_footer<R>(ui: &mut Ui, key: &'static str, rows: usize, add: impl FnOnce(&mut Ui) -> R) -> egui::InnerResponse<R> {
+        let t = Tokens::get();
+        // This band is content inside the enclosing card, not a second adaptive card.
+        let host = super::Container::new(ui.ctx(), super::Surface::Viewport);
+        host.edge(key, super::Edge::Bottom)
+            .exact_size(t.control_height * rows.clamp(1, 8) as f32 + t.space_24 + t.space_8)
+            .resizable(false)
+            .frame(host.edge_frame(egui::Color32::TRANSPARENT))
+            .show(ui, add)
+    }
+
     /// Shared floating card surface for panels, windows and modal confirmations.
     pub(super) fn card_frame(ctx: &egui::Context) -> egui::Frame {
         let t = Tokens::get();
@@ -120,7 +135,19 @@ impl<'a> Panel<'a> {
     }
 
     pub(crate) fn new(title: &'a str, id: egui::Id, anchor: egui::Pos2, viewport: egui::Rect, side: crate::frame::Side, frame: egui::Frame) -> Self {
-        Self { title, id, anchor, viewport, side, frame, width: Tokens::get().form_card_width, ok: "OK", cancel: "Cancel", reset_scroll: false }
+        Self {
+            title,
+            id,
+            anchor,
+            viewport,
+            side,
+            frame,
+            width: Tokens::get().form_card_width,
+            body_rows: None,
+            ok: "OK",
+            cancel: "Cancel",
+            reset_scroll: false,
+        }
     }
 
     /// A newly opened manager starts at its first section. Later frames retain user scrolling.
@@ -144,6 +171,15 @@ impl<'a> Panel<'a> {
     /// Table surface width derives from the same card-width token and remains viewport bounded.
     pub(crate) fn wide(self) -> Self {
         self.width(Tokens::get().form_card_width * 3.0)
+    }
+
+    /// Cap a manager's scrolling body independently of its position, in control rows.
+    /// Short viewports still take precedence so the header and actions remain reachable.
+    pub(crate) fn body_rows(mut self, rows: f32) -> Self {
+        if rows.is_finite() {
+            self.body_rows = Some(rows.clamp(1.0, 32.0));
+        }
+        self
     }
 
     /// The painted anchor also drives dragging, including the shell's edge clearance.
@@ -262,6 +298,7 @@ impl<'a> Panel<'a> {
                 - self.frame.stroke.width;
             let footer_height = t.form_footer_height;
             let fields_height = (bottom - ui.cursor().top() - footer_height - ui.spacing().item_spacing.y).max(0.0);
+            let fields_height = self.body_rows.map_or(fields_height, |rows| fields_height.min(rows * t.control_height + t.space_12 * 2.0));
             let fields_rect = egui::Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), fields_height));
             let state = if collapsed.as_deref().copied().unwrap_or(false) {
                 scenario::publish_count("dialog:body:content_height", 0.0);
@@ -312,6 +349,7 @@ impl<'a> Panel<'a> {
                 ui.interact(rect, ui.id().with("compute_status"), egui::Sense::hover()).on_hover_text(status);
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
             }
+            super::Container::finish_content(ui, self.positioned_frame(ui.ctx()));
             (close, action)
         })
     }
@@ -360,6 +398,7 @@ impl<'a> Panel<'a> {
             } else {
                 contents(ui);
             }
+            super::Container::finish_content(ui, self.positioned_frame(ui.ctx()));
         });
     }
 }
@@ -381,6 +420,8 @@ pub struct Window<'a> {
     closeable: bool,
     width: f32,
     body_padding: bool,
+    page_rows: f32,
+    page_padding: egui::Vec2,
     left_slot: bool,
 }
 
@@ -401,6 +442,8 @@ impl<'a> Window<'a> {
             closeable: true,
             width: Tokens::get().form_card_width * 1.5,
             body_padding: true,
+            page_rows: 16.0,
+            page_padding: vec2(Tokens::get().space_16, Tokens::get().space_16),
             left_slot: false,
         }
     }
@@ -442,6 +485,22 @@ impl<'a> Window<'a> {
     pub fn cards(mut self, cards: f32) -> Self {
         if cards.is_finite() && cards > 0.0 {
             self.width = Tokens::get().form_card_width * cards.min(16.0);
+        }
+        self
+    }
+
+    /// Maximum page-body height in control rows, still bounded by the viewport.
+    pub(crate) fn page_rows(mut self, rows: f32) -> Self {
+        if rows.is_finite() {
+            self.page_rows = rows.clamp(1.0, 32.0);
+        }
+        self
+    }
+
+    /// Content inset for a page-based window, independent of its navigation rail.
+    pub(crate) fn page_padding(mut self, padding: egui::Vec2) -> Self {
+        if padding.is_finite() {
+            self.page_padding = padding.max(egui::Vec2::ZERO);
         }
         self
     }
@@ -524,7 +583,9 @@ impl<'a> Window<'a> {
         left: impl FnOnce(&mut Ui),
     ) -> (bool, super::Action) {
         self.body_padding = false;
-        self.show_with_left(ctx, true, |ui| page_list(ui, selected, pages, state), left)
+        let rows = self.page_rows;
+        let padding = self.page_padding;
+        self.show_with_left(ctx, true, |ui| page_list_sized(ui, selected, pages, state, rows, padding), left)
     }
 
     /// The same bounded card frame, either movable or an input-blocking modal.
@@ -538,7 +599,9 @@ impl<'a> Window<'a> {
                 .frame(frame)
                 .show(ctx, |ui| {
                     ui.set_width(inner_width);
-                    add(ui)
+                    let result = add(ui);
+                    super::Container::finish_content(ui, frame);
+                    result
                 });
             scenario::publish_rect("dialog:window", shown.response.rect);
             return shown.inner;
@@ -561,7 +624,11 @@ impl<'a> Window<'a> {
             (None, Some((pivot, pos))) => window.pivot(pivot).default_pos(pos),
             (None, None) => window.pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center() - vec2(0.0, row_height() * 2.5)),
         };
-        let shown = window.show(ctx, add);
+        let shown = window.show(ctx, |ui| {
+            let result = add(ui);
+            super::Container::finish_content(ui, frame);
+            result
+        });
         if let Some(shown) = &shown {
             scenario::publish_rect("dialog:window", shown.response.rect);
         }
@@ -573,27 +640,39 @@ impl<'a> Window<'a> {
 pub(crate) struct WindowPage<S> {
     pub icon: &'static str,
     pub label: &'static str,
+    pub group: Option<&'static str>,
     pub handle: &'static str,
     pub scroll: bool,
     pub draw: fn(&mut Ui, &mut S),
 }
 
+#[cfg(test)]
 pub(super) fn page_list<S>(ui: &mut Ui, selected: &mut usize, pages: &[WindowPage<S>], state: &mut S) {
+    page_list_sized(ui, selected, pages, state, 16.0, vec2(Tokens::get().space_16, Tokens::get().space_16));
+}
+
+fn page_list_sized<S>(ui: &mut Ui, selected: &mut usize, pages: &[WindowPage<S>], state: &mut S, rows: f32, padding: egui::Vec2) {
     let t = Tokens::get();
     let height = (dimension(ui.ctx().content_rect().height()) - t.form_header_height - t.form_footer_height - t.space_24 * 3.0)
-        .clamp(0.0, t.control_height * 16.0);
+        .clamp(0.0, t.control_height * rows);
     let (body, _) = ui.allocate_exact_size(vec2(dimension(ui.available_width()), height), egui::Sense::hover());
     let width = (t.form_label_width * 2.0 + t.space_24 * 2.0).min(body.width());
     let nav = egui::Rect::from_min_size(body.min, vec2(width, body.height()));
     ui.painter().rect_filled(nav, 0.0, t.dialog_footer);
-    ui.painter().vline(nav.right(), nav.y_range(), egui::Stroke::new(1.0, t.dialog_rule));
+    t.secondary_vline(ui.painter(), nav.right(), nav.y_range(), t.dialog_rule);
     scenario::publish_rect("dialog:pages", nav);
     *selected = (*selected).min(pages.len().saturating_sub(1));
-    ui.scope_builder(egui::UiBuilder::new().max_rect(nav.shrink2(vec2(t.space_8, t.space_10))), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(nav.shrink2(vec2(t.space_8, t.space_6))), |ui| {
         ui.set_clip_rect(ui.clip_rect().intersect(nav));
         ui.spacing_mut().item_spacing.y = t.space_2;
         egui::ScrollArea::vertical().id_salt("window_pages").show(ui, |ui| {
             for (index, page) in pages.iter().enumerate() {
+                if let Some(group) = page.group {
+                    ui.add_space(t.space_8);
+                    let (rect, _) = ui.allocate_exact_size(vec2(dimension(ui.available_width()), t.space_24), egui::Sense::hover());
+                    let rect = rect.shrink2(vec2(t.space_10, 0.0));
+                    paint_text(ui, rect, &crate::i18n::tr(group).to_uppercase(), crate::fonts::semibold(t.font_small), t.form_dim, true);
+                }
                 let label = crate::i18n::tr(page.label);
                 let (rect, response) =
                     ui.allocate_exact_size(vec2(dimension(ui.available_width()), t.control_height + t.space_4), egui::Sense::click());
@@ -627,23 +706,26 @@ pub(super) fn page_list<S>(ui: &mut Ui, selected: &mut usize, pages: &[WindowPag
         });
     });
     let content = egui::Rect::from_min_max(egui::pos2(nav.right(), body.top()), body.max);
-    let content = content.shrink2(vec2(t.space_16.min(content.width() / 2.0), t.space_16.min(content.height() / 2.0)));
-    ui.scope_builder(egui::UiBuilder::new().max_rect(content), |ui| {
-        ui.set_clip_rect(ui.clip_rect().intersect(content));
-        ui.spacing_mut().item_spacing.y = t.form_gap_y;
-        if let Some(page) = pages.get(*selected) {
-            if page.scroll {
-                let scroll = egui::ScrollArea::vertical()
-                    .id_salt(("sc_prefs_page", *selected))
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| (page.draw)(ui, state));
-                scenario::publish_rect("dialog:page_body", scroll.inner_rect);
-            } else {
-                (page.draw)(ui, state);
-                scenario::publish_rect("dialog:page_body", content);
+    let content = content.shrink2(vec2(padding.x.min(content.width() / 2.0), padding.y.min(content.height() / 2.0)));
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(content)
+            .ui_stack_info(egui::UiStackInfo::default().with_tag_value(super::preferences::PAGE_SCROLL_GUTTER, padding.x)),
+        |ui| {
+            let clip = egui::Rect::from_min_max(content.min, egui::pos2(body.right(), content.bottom()));
+            ui.set_clip_rect(ui.clip_rect().intersect(clip));
+            ui.spacing_mut().item_spacing.y = t.form_gap_y;
+            if let Some(page) = pages.get(*selected) {
+                if page.scroll {
+                    let scroll = super::settings_scroll(ui, ("sc_prefs_page", *selected), |ui| (page.draw)(ui, state));
+                    scenario::publish_rect("dialog:page_body", scroll.inner_rect);
+                } else {
+                    (page.draw)(ui, state);
+                    scenario::publish_rect("dialog:page_body", content);
+                }
             }
-        }
-    });
+        },
+    );
 }
 
 #[cfg(test)]
